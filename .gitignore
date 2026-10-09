@@ -1,0 +1,14 @@
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.crux/
+crux.toml
+
+# Local Claude Code config — but the shared .claude/settings.json IS
+# committed: it auto-installs the crux plugin in claude.ai/code sessions.
+# (`dir/` can't be re-included from inside, hence `dir/*` + negation.)
+.claude/*
+!.claude/settings.json
+

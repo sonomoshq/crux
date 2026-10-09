@@ -1,0 +1,18 @@
+{
+  "name": "crux",
+  "owner": {
+    "name": "Sonomos",
+    "url": "https://github.com/sonomoshq"
+  },
+  "metadata": {
+    "description": "Self-hosted marketplace for the Crux PR-review plugin. Add with: /plugin marketplace add sonomoshq/crux"
+  },
+  "plugins": [
+    {
+      "name": "crux",
+      "source": "./",
+      "description": "PR review cards from Crux: /crux:preview, /crux:run, and /crux:prs commands, automatic review when a PR ships from a Claude Code session, and session intent capture.",
+      "category": "code-review"
+    }
+  ]
+}

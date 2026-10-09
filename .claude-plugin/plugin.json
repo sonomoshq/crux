@@ -1,0 +1,12 @@
+{
+  "name": "crux",
+  "version": "0.1.0",
+  "description": "Finds the crux of a PR: triaged, causally-ordered review briefings posted to GitHub, announced to Slack, and auto-triggered whenever a PR ships from a Claude Code session.",
+  "author": {
+    "name": "Sonomos",
+    "url": "https://github.com/sonomoshq"
+  },
+  "homepage": "https://github.com/sonomoshq/crux",
+  "repository": "https://github.com/sonomoshq/crux",
+  "keywords": ["code-review", "pull-request", "github", "slack", "git-hooks"]
+}

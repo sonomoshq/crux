@@ -1,0 +1,44 @@
+{
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v crux >/dev/null 2>&1 || { [ -n \"$CLAUDE_CODE_REMOTE_ENVIRONMENT_TYPE\" ] && command -v python3 >/dev/null 2>&1 && python3 -m pip install --user --quiet \"${CLAUDE_PLUGIN_ROOT}\" >/dev/null 2>&1; }; exit 0",
+            "timeout": 120
+          }
+        ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v _crux-hook >/dev/null 2>&1 || exit 0; _crux-hook claude-session-start"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v _crux-hook >/dev/null 2>&1 || exit 0; _crux-hook claude-stop"
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "matcher": "Bash|mcp__github__create_pull_request|mcp__github__push_files",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "command -v _crux-hook >/dev/null 2>&1 || exit 0; _crux-hook claude-post-bash"
+          }
+        ]
+      }
+    ]
+  }
+}

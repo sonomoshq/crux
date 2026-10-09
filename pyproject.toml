@@ -1,0 +1,44 @@
+[build-system]
+requires = ["setuptools>=77"]  # 77: SPDX `license` string + license-files
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "crux"
+dynamic = ["version"]
+description = "Crux finds the crux of a PR: triaged, causally-ordered review briefings posted to GitHub"
+# 3.11 floor (needs tomllib): claude.ai/code cloud containers ship 3.11, and
+# the plugin's SessionStart bootstrap must be able to pip-install there.
+requires-python = ">=3.11"
+license = "Apache-2.0"
+license-files = ["LICENSE", "NOTICE"]
+
+[tool.setuptools.dynamic]
+# Single source of truth: crux/__init__.py __version__ (also what `crux
+# --version` prints).
+version = {attr = "crux.__version__"}
+
+[project.scripts]
+crux = "crux.cli:main"
+# Private git-hook machinery, kept out of the `crux` command surface. The hook
+# shims install-hooks writes call `_crux-hook <name>`; it is not meant to be
+# run by hand. pipx installs it alongside `crux`, so it rides the same PATH.
+_crux-hook = "crux.cli:hook_main"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+where = ["."]
+# "crux" alone is only the top-level package; "crux.*" pulls in every
+# subpackage (crux.harvest, …). Without the wildcard the wheel shipped
+# without crux/harvest and every `crux run` crashed at
+# `import crux.harvest.blast` (ModuleNotFoundError) after a push.
+include = ["crux", "crux.*"]
+
+[tool.setuptools.package-data]
+# Non-.py files that must ship inside the installed package. Without this,
+# installed copies (pipx, plain pip) lack the prompt template and every
+# review dies with "prompt template missing" (tests/test_packaging.py). The
+# git hooks are no longer shipped as files — `crux install-hooks` generates
+# them (see crux/cli.py _hook_shim), so nothing under crux/hooks/ is needed.
+crux = ["prompts/*.md"]

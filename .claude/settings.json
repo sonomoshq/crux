@@ -1,0 +1,13 @@
+{
+  "extraKnownMarketplaces": {
+    "crux": {
+      "source": {
+        "source": "github",
+        "repo": "sonomoshq/crux"
+      }
+    }
+  },
+  "enabledPlugins": {
+    "crux@crux": true
+  }
+}

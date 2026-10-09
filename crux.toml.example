@@ -1,0 +1,208 @@
+# Crux configuration (all keys optional). Two places, layered:
+#   ~/.config/crux/crux.toml   — machine-global, applies to every repo
+#                                (good for [slack]; $XDG_CONFIG_HOME respected)
+#   <repo>/crux.toml           — per repo, overrides the global file key by key
+#                                (e.g. [slack] channel = "" opts a repo out)
+
+[scope]
+# Crux only operates on repos whose origin owner is listed here (D13).
+# Empty = Crux does nothing. e.g. owners = ["your-org", "your-username"]
+owners = []
+# Optional finer-grained allowlist: exact "owner/name" repos (case-
+# insensitive). Empty/omitted = every repo of the owners above. Applies to
+# every automatic trigger — the git hooks and the Claude Code plugin hook.
+# repos = ["your-org/your-repo"]
+
+[gate]
+# Skip the PR entirely (post nothing) when ALL hold:
+#   behavioral changed lines < min_behavioral_lines
+#   AND no sensitive path/keyword hits
+#   AND no dependency-file changes
+#   AND max blast radius < max_blast
+min_behavioral_lines = 50
+max_blast = 5
+
+[sensitivity]
+paths = ["auth", "billing", "payment", "security", "secrets", "migrations", ".github/workflows"]
+keywords = ["password", "token", "secret", "api_key", "subprocess", "eval("]
+
+[history]
+window_days = 180
+co_change_threshold = 0.7
+
+[llm]
+model = "sonnet"
+timeout = 600
+
+[pr]
+# Fallback base branch when Crux can't tell which branch this one was created
+# from (the post-checkout hook records that as branch.<name>.cruxBase, and it
+# is preferred over this). Crux diffs against, and opens the PR into, that base.
+default_base = "main"
+# When true, skip the pre-push "Create a PR? [Y/n]" prompt and create the PR
+# automatically. Off by default: a human is asked on the terminal.
+auto_create = false
+# D39: what to do when the PR's head branch is missing from the remote — the
+# signature of a branch renamed with `git branch -m`, which keeps the upstream
+# of the name it had, so `git push` moves the OLD remote branch and the new
+# name never arrives. "ask" (the default) offers to push it, on the terminal,
+# before the PR is created; "always" pushes without asking; "never" leaves it
+# and lets `gh pr create` fail with "Head ref must be a branch".
+push_head = "ask"
+# The remote a missing head branch is pushed to.
+push_remote = "origin"
+
+[prs]
+# `crux prs` lists open PRs — for the current repo (`crux prs .`), named repos
+# (`crux prs Crux owner/name`), or (with no arguments) every repo of the
+# [scope] owners — running one `gh pr list` per repo in parallel.
+# jobs = 0 (the default) sizes the pool from the hardware: max parallel tasks,
+# CPU count + 4 capped at 32. Set a positive number to cap the parallel gh
+# calls there instead. `crux prs --jobs N` overrides this per run.
+jobs = 0
+
+[commit]
+# D27: right after a human-typed commit (one without Claude Code's co-author
+# trailer), rewrite its terse message from the commit's diff and amend the
+# commit in place — before any push. The human's own message stays verbatim on
+# top; Crux's subject + bullets are pasted below it, and PR titles/descriptions
+# built from commits prefer the Crux part. Also governs the D28 pre-push check
+# that finishes any still-pending enrichment before commits go up (stopping
+# that one push with a "push again" notice when it had work to do).
+# Set false to leave commits alone.
+enrich = true
+
+[memory]
+# D31: Crux keeps a small store of durable facts it learns about each repo
+# (~/.config/crux/memory/<owner>__<repo>.json) and reads it into every review,
+# so reviews sharpen over time. The store keeps itself current: each review may
+# add up to 3 facts and retire up to 3 its PR just disproved (D36), so you
+# should never need `crux memory` except to look, to pin a fact by hand, or to
+# clear. Set false to stop reviews reading and writing the store (`crux memory`
+# itself keeps working).
+enabled = true
+# Most facts kept per repo. Over the cap, review-written facts are evicted
+# oldest-first; facts added by hand via `crux memory add` outlive all of them
+# and are the only ones a review can never retire.
+max = 40
+
+[slack]
+# Announce each PR to a Slack channel (D16). Leave `channel` empty to disable.
+# The bot token is read from the env var named by `token_env` (never stored
+# here) and the bot must be invited to the channel. Scopes: chat:write +
+# channels:history, PLUS channels:read if `channel` is a NAME (resolving a
+# name calls conversations.list; a channel ID needs no lookup — grab it from
+# Slack: channel → View channel details → About → Channel ID). Private
+# channels need the groups:* variants. On the first push Crux checks the
+# channel for the PR link and, if absent, posts a new message; later pushes
+# reply in that message's thread.
+channel = ""                    # e.g. a channel ID (C0123…) or "pull-requests"
+token_env = "SLACK_BOT_TOKEN"
+
+[render]
+# D23: the most lines of code any single card pointer may ask a reviewer to
+# read. Items spanning more are broken down into parts of at most this many
+# lines, each with its own one-sentence summary — analysis over raw code.
+max_read_lines = 50
+
+[standards]
+# D14: repo conventions checked by the design-findings pass, in addition to the
+# target repo's CLAUDE.md. Max findings per card: standards_max.
+rules = [
+  "Prefer composition over inheritance",
+  "No new singletons or module-level mutable state",
+]
+standards_max = 5
+
+# --- Super PRs (D37) -------------------------------------------------------
+# A feature that spans several repos arrives as several PRs. `crux super`
+# bundles them: ONE brief covering all of it (a single review pass, not one
+# per PR), and one command that merges every member PR.
+[super]
+# Repo that holds the brief issues. GitHub has no repo-less issue and no
+# cross-repo grouping object, so each bundle's brief is filed here. It is not
+# "about" this repo — it is parked in it. Leave empty to disable super PRs.
+home = ""                       # e.g. "your-org/pr-bundles"
+# The repos a super PR may draw from are the ones already configured in
+# [scope] above — the `repos` allowlist when you set one, else every repo of
+# `owners`. There is no second list to keep in step with it: you pick the PRs
+# you want off that list, and the ones you pick ARE the super PR.
+#
+# Where local clones of those repos are hunted for (a few levels deep), and
+# where "set up to test" puts a member repo you do not have yet: straight into
+# this directory as <root>/<repo>, nothing built underneath it. Unset = the
+# PARENT of the repo you run in (the usual ~/src/<org>/<repo> layout) — never
+# the current directory, so a bundle's repos are never cloned inside one of its
+# own members. Clones are placed by their origin remote, so a directory renamed
+# locally is still recognised.
+roots = []                      # e.g. ["~/src"]
+# Hard caps on the brief. It is one screen for a 3-PR bundle and for a 30-PR
+# one — more PRs mean more selective, never longer. Enforced when rendering,
+# not merely asked of the model. Merge conflicts are exempt from checks_max:
+# a change that cannot land is never an optional read.
+ideas_max = 5
+checks_max = 7
+# D41: how a super PR's pull requests are merged — "squash", "merge" (merge
+# commits) or "rebase". A bundle can set its own (`crux super order N --method
+# merge`), which travels in its brief and wins for everyone who presses Merge;
+# this is the fallback for bundles that do not, on THIS machine; and
+# `crux super merge N --method …` beats both for one run. Bundles whose PRs are
+# built on each other's commits want "merge": after a squash the later PRs
+# conflict with the very commits they contain.
+merge_method = "squash"
+
+# --- The brief's buttons (D38) ---------------------------------------------
+# `crux serve` runs a service on 127.0.0.1 and the super PR brief carries two
+# links to it: Merge (approve every member PR in your name, then land them) and
+# Close. The SAME link works for everyone reading the brief, because loopback
+# resolves on the machine of whoever clicks it — so the request always arrives
+# at a Crux logged in as that person, which is what lets the approval carry
+# their name. Nothing is reachable from off the machine, and a bare click only
+# renders a confirmation page; the action needs the button on that page.
+#
+# You cannot merge a bundle you wrote: GitHub will not take your approval on
+# your own PR, and landing only the rest would leave a cross-repo feature
+# half-applied. The page says so and offers to ask in Slack instead.
+# The service starts itself: every push, and every card or brief Crux
+# publishes, brings it up if it is not already listening (a detached
+# `crux serve --port N`, the same OS-agnostic detach the background review
+# uses — no systemd, launchd or Task Scheduler anywhere). Run `crux serve` by
+# hand only if you want it in the foreground. A port held by something else is
+# left alone, with a line in the log saying the buttons will not work.
+[serve]
+port = 8787                     # 0 = no buttons in the cards at all
+
+# --- Zenhub (D40, optional) ------------------------------------------------
+# Link the Zenhub tickets a PR closes, and close them when it lands — so the
+# board keeps itself in step with what actually shipped.
+#
+# OFF unless `workspace` is set. While it is empty Crux makes no Zenhub calls,
+# asks no questions, and behaves exactly as it did before this feature existed.
+#
+# Two shapes, one behaviour. A regular PR's tickets close when THAT PR merges.
+# A super PR's tickets hang off the BUNDLE and close only once EVERY member PR
+# has landed — a cross-repo ticket is not done while half its repos are
+# unmerged. Crux picks the right one for you; `crux zenhub link` on a branch
+# that belongs to a bundle points you at the bundle.
+#
+# Setup:  `crux zenhub setup`  (stores the key), then set `workspace` below.
+# Check:  `crux zenhub status` and `crux zenhub doctor`.
+[zenhub]
+# The workspace, by name or by the ID in the app URL. Empty = Zenhub off.
+workspace = ""                  # e.g. "Engineering"
+# The API key is read from this env var, else from the credentials file
+# (~/.config/crux/credentials.json) — never stored here. Make one at
+# https://app.zenhub.com/settings/tokens.
+token_env = "ZENHUB_API_KEY"
+# Close linked tickets when their PRs land. False keeps the linking (and
+# `crux zenhub sync`) while leaving the closing to a human.
+close_on_merge = true
+# Pipeline a closed ticket is moved to. Closing alone sets the issue's state;
+# this is what moves the CARD, which boards do not always do by themselves.
+# Empty = close without moving.
+done_pipeline = ""              # e.g. "Closed"
+# Offer the ticket picker on the terminal after a review, and after
+# `crux super new`. False links only when you ask by hand — for people who
+# want the closing without being asked on every push. Either way the picker's
+# default is "none": pressing enter links nothing.
+ask = true
