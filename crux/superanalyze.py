@@ -336,17 +336,27 @@ def annotate(bundle: Bundle, evidence: list[RepoEvidence],
     annotation = _coerce(claude_json(prompt, cfg), cfg)
 
     hits = _jargon(annotation)
-    if hits:
-        retry = (
-            prompt
-            + "\n\nREWRITE REQUIRED: your previous answer used banned jargon ("
-            + ", ".join(sorted(set(hits)))
-            + "). Follow the Plain-English rule: rewrite ALL reviewer-facing text"
-              " without those terms and return the complete JSON object again."
-        )
+    if hits or not annotation.thesis:
+        # One retry covers both faults, so a bundle still costs at most two
+        # calls. A blank thesis has no fallback: the brief and the Slack
+        # announcement just lose their one-line summary.
+        fixes = []
+        if hits:
+            fixes.append(
+                "your previous answer used banned jargon ("
+                + ", ".join(sorted(set(hits)))
+                + "). Follow the Plain-English rule: rewrite ALL reviewer-facing"
+                  " text without those terms")
+        if not annotation.thesis:
+            fixes.append("your previous answer left `thesis` empty. It is"
+                         " required: one plain sentence, <=25 words")
+        retry = (prompt + "\n\nREWRITE REQUIRED: " + "; and ".join(fixes)
+                 + ". Return the complete JSON object again.")
         annotation = _coerce(claude_json(retry, cfg), cfg)
         remaining = _jargon(annotation)
         if remaining:
             log.warning("plain-english lint (D15): jargon kept after retry: %s",
                         sorted(set(remaining)))
+        if not annotation.thesis:
+            log.warning("super analysis: thesis still empty after retry")
     return annotation
