@@ -42,6 +42,11 @@ broken stamp file, an unreadable lock, a clock that went backwards — none of
 those may cause the trailing run to be silently dropped, because a missed
 refresh means the brief is stale and nobody is told. The only thing the lock
 prevents is *concurrency*; when in doubt we run.
+
+The same machinery debounces the per-PR ``crux run --delay``: a push and a
+``gh pr create`` moments later each detach one, and without it every one
+reviews the PR and announces it in Slack. Those runs are keyed by
+``run_key(root, branch)`` instead of a super-PR number.
 """
 
 from __future__ import annotations
@@ -49,6 +54,7 @@ from __future__ import annotations
 import contextlib
 import errno
 import fcntl
+import hashlib
 import os
 import time
 from pathlib import Path
@@ -74,12 +80,24 @@ def _dir() -> Path:
     return d
 
 
-def _stamp_path(number: int) -> Path:
-    return _dir() / f"super-{number}.stamp"
+def run_key(root: str | Path, branch: str) -> str:
+    """Key for the per-PR ``crux run`` of *branch* in the clone at *root*."""
+    digest = hashlib.sha1(f"{root}\0{branch}".encode()).hexdigest()[:16]
+    return f"run-{digest}"
 
 
-def _run_lock_path(number: int) -> Path:
-    return _dir() / f"super-{number}.run.lock"
+def _name(number: int | str) -> str:
+    # A super-PR number keeps its historical file name; a string key (see
+    # run_key) is already a safe file name.
+    return f"super-{number}" if isinstance(number, int) else number
+
+
+def _stamp_path(number: int | str) -> Path:
+    return _dir() / f"{_name(number)}.stamp"
+
+
+def _run_lock_path(number: int | str) -> Path:
+    return _dir() / f"{_name(number)}.run.lock"
 
 
 def _read_stamp(path: Path) -> int:
@@ -92,7 +110,7 @@ def _read_stamp(path: Path) -> int:
         return 0
 
 
-def claim(number: int) -> int:
+def claim(number: int | str) -> int:
     """Record that a refresh of super PR *number* was requested, and return
     this request's ticket. The ticket is compared against the stored stamp
     after the delay to decide who owns the trailing run.
@@ -124,7 +142,7 @@ def claim(number: int) -> int:
         return ticket
 
 
-def superseded(number: int, ticket: int) -> bool:
+def superseded(number: int | str, ticket: int) -> bool:
     """True if a newer request has since claimed super PR *number* — meaning
     some later push owns the trailing run and this one should skip.
 
@@ -171,7 +189,7 @@ def _flock(path: Path, blocking: bool) -> Iterator[bool]:
 
 
 @contextlib.contextmanager
-def single_flight(number: int, log=None) -> Iterator[bool]:
+def single_flight(number: int | str, log=None) -> Iterator[bool]:
     """Serialize refreshes of super PR *number*. Blocks until any in-progress
     refresh of the same super PR finishes (up to ``_RUN_LOCK_TIMEOUT_S``),
     then yields True to run the body under the lock.
@@ -191,8 +209,8 @@ def single_flight(number: int, log=None) -> Iterator[bool]:
         # single-flight rather than skip: the lock only prevents concurrency,
         # never the refresh itself.
         if log:
-            log.warning("super-debounce: cannot open run lock for super #%d "
-                        "(%s); running without single-flight", number, exc)
+            log.warning("super-debounce: cannot open run lock for %s "
+                        "(%s); running without single-flight", _name(number), exc)
         yield True
         return
     try:
@@ -207,8 +225,8 @@ def single_flight(number: int, log=None) -> Iterator[bool]:
                     if log:
                         log.warning(
                             "super-debounce: waited %.0fs for an in-progress "
-                            "refresh of super #%d; running anyway to avoid a "
-                            "stale brief", _RUN_LOCK_TIMEOUT_S, number)
+                            "run of %s; running anyway to avoid a "
+                            "stale brief", _RUN_LOCK_TIMEOUT_S, _name(number))
                     break  # run anyway rather than drop the trailing refresh
                 time.sleep(_RUN_LOCK_POLL_S)
         yield True
