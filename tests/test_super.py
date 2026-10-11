@@ -34,6 +34,7 @@ import crux.bundle as bundle_store
 import crux.candidates as candidates
 import crux.clones as clones
 import crux.config as config
+import crux.superanalyze as superanalyze
 import crux.superdiff as superdiff
 import crux.superpost as superpost
 import crux.superpr as superpr
@@ -401,6 +402,38 @@ class TestMergeReport(unittest.TestCase):
         self.assertIn("o/B#2", text)
         self.assertIn("required review", text)
         self.assertIn("run the merge again", text)
+
+
+class TestSuperThesis(unittest.TestCase):
+    """A blank thesis has no fallback, so annotate() retries for it."""
+
+    def _annotate(self, *replies: dict):
+        with mock.patch.object(superanalyze, "build_prompt", return_value="P"), \
+             mock.patch.object(superanalyze, "claude_json",
+                               side_effect=list(replies)) as call:
+            ann = superanalyze.annotate(mock.Mock(members=[]), [], [],
+                                        Config())
+        return ann, call
+
+    def test_missing_thesis_is_retried(self) -> None:
+        ann, call = self._annotate({}, {"thesis": "Billing moves to the API."})
+        self.assertEqual(ann.thesis, "Billing moves to the API.")
+        self.assertEqual(call.call_count, 2)
+        self.assertIn("`thesis` empty", call.call_args.args[0])
+
+    def test_thesis_is_asked_for_until_it_comes_back(self) -> None:
+        ann, call = self._annotate({}, {}, {"thesis": "Billing moves."})
+        self.assertEqual(ann.thesis, "Billing moves.")
+        self.assertEqual(call.call_count, 3)
+
+    def test_thesis_loop_is_capped(self) -> None:
+        ann, call = self._annotate(*[{}] * 10)
+        self.assertEqual(ann.thesis, "")
+        self.assertEqual(call.call_count, 1 + superanalyze._THESIS_TRIES_MAX)
+
+    def test_present_thesis_costs_one_call(self) -> None:
+        ann, call = self._annotate({"thesis": "Billing moves to the API."})
+        self.assertEqual(call.call_count, 1)
 
 
 if __name__ == "__main__":
