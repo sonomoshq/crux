@@ -44,6 +44,9 @@ Four rules govern what you write:
    | each map step `label` | 5 words |
    | `order_why` | 20 words |
 
+   `thesis` is REQUIRED and never empty: it is the brief's headline and the
+   line the team sees in chat.
+
    One sentence means ONE sentence: no semicolons, no "and also", no
    parenthetical asides.
 

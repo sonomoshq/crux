@@ -238,6 +238,9 @@ def build_prompt(bundle: Bundle, evidence: list[RepoEvidence],
 # Response coercion
 # ---------------------------------------------------------------------------
 
+_THESIS_TRIES_MAX = 3
+
+
 def _text(raw: object) -> str:
     return raw.strip() if isinstance(raw, str) else ""
 
@@ -349,4 +352,19 @@ def annotate(bundle: Bundle, evidence: list[RepoEvidence],
         if remaining:
             log.warning("plain-english lint (D15): jargon kept after retry: %s",
                         sorted(set(remaining)))
+
+    # A blank thesis has no fallback: the brief and the Slack announcement
+    # just lose their one-line summary. Ask until there is one, capped so a
+    # model that never answers cannot spin forever.
+    tries = 0
+    while not annotation.thesis and tries < _THESIS_TRIES_MAX:
+        tries += 1
+        log.info("super analysis: thesis empty; asking again (%d/%d)",
+                 tries, _THESIS_TRIES_MAX)
+        retry = (prompt + "\n\nREWRITE REQUIRED: your previous answer left"
+                 " `thesis` empty. It is required: one plain sentence, <=25"
+                 " words. Return the complete JSON object again.")
+        annotation = _coerce(claude_json(retry, cfg), cfg)
+    if not annotation.thesis:
+        log.warning("super analysis: thesis still empty after %d tries", tries)
     return annotation
