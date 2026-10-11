@@ -421,6 +421,16 @@ class TestSuperThesis(unittest.TestCase):
         self.assertEqual(call.call_count, 2)
         self.assertIn("`thesis` empty", call.call_args.args[0])
 
+    def test_thesis_is_asked_for_until_it_comes_back(self) -> None:
+        ann, call = self._annotate({}, {}, {"thesis": "Billing moves."})
+        self.assertEqual(ann.thesis, "Billing moves.")
+        self.assertEqual(call.call_count, 3)
+
+    def test_thesis_loop_is_capped(self) -> None:
+        ann, call = self._annotate(*[{}] * 10)
+        self.assertEqual(ann.thesis, "")
+        self.assertEqual(call.call_count, 1 + superanalyze._THESIS_TRIES_MAX)
+
     def test_present_thesis_costs_one_call(self) -> None:
         ann, call = self._annotate({"thesis": "Billing moves to the API."})
         self.assertEqual(call.call_count, 1)
