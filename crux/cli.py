@@ -392,6 +392,7 @@ def _cmd_run(args: argparse.Namespace) -> int:
     info: RepoInfo | None = None
     pr: int | None = args.pr
     scoped = False  # True once the D13 allowlist check has passed
+    held = contextlib.ExitStack()  # the single-flight lock of a delayed run
     try:
         import crux.config as config
         import crux.gitio as gitio
@@ -419,7 +420,23 @@ def _cmd_run(args: argparse.Namespace) -> int:
                     f"reviewing it in the background (starts in ~{args.delay}s)…")
         if args.delay > 0:
             # Used by the detached pre-push run so the push lands first.
+            # Every push and every `gh pr create` detaches one of these, so a
+            # push-then-create burst would review and announce the PR once
+            # per trigger. Same trailing-edge debounce as super refresh: the
+            # newest request runs, the rest stand down.
+            import crux.superdebounce as superdebounce
+            key = superdebounce.run_key(info.root, info.branch)
+            ticket = superdebounce.claim(key)
             time.sleep(args.delay)
+            if superdebounce.superseded(key, ticket):
+                log.info("run for %s superseded by a newer trigger; skipping "
+                         "this one", info.branch)
+                return 0
+            held.enter_context(superdebounce.single_flight(key, log))
+            if superdebounce.superseded(key, ticket):
+                log.info("run for %s superseded while waiting for the run "
+                         "lock; skipping this one", info.branch)
+                return 0
 
         import crux.cache as cache
         import crux.dag as dag
@@ -653,6 +670,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
                              dry_run=args.dry_run):
             _tty_failure("the review run crashed")
         return 0
+    finally:
+        held.close()
 
 
 # ---------------------------------------------------------------------------
