@@ -115,5 +115,44 @@ class TestSuperDebounce(unittest.TestCase):
                             "a different super PR's lock is independent")
 
 
+class TestRunDebounce(unittest.TestCase):
+    """A push and a `gh pr create` each detach a delayed `crux run`; only the
+    newest may review (and announce) the PR."""
+
+    def setUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        patcher = mock.patch.dict(os.environ, {"HOME": self.tmp.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.addCleanup(self.tmp.cleanup)
+
+    def test_run_keys_are_per_branch_and_apart_from_super_prs(self) -> None:
+        a = sd.run_key("/src/web", "feat/a")
+        self.assertEqual(a, sd.run_key("/src/web", "feat/a"))
+        self.assertNotEqual(a, sd.run_key("/src/web", "feat/b"))
+        mine = sd.claim(a)
+        sd.claim(sd.run_key("/src/web", "feat/b"))
+        sd.claim(1)
+        self.assertFalse(sd.superseded(a, mine))
+
+    def _run(self, sleep):
+        import argparse
+        import crux.cli as cli
+        info = mock.Mock(root="/src/web", branch="feat/a")
+        args = argparse.Namespace(pr=39, base=None, delay=15, dry_run=False)
+        with mock.patch("crux.gitio.repo_info", return_value=info), \
+             mock.patch("crux.config.load"), \
+             mock.patch.object(cli, "_out_of_scope", return_value=False), \
+             mock.patch("crux.post.notify_tty"), \
+             mock.patch.object(cli.time, "sleep", side_effect=sleep), \
+             mock.patch.object(sd, "single_flight") as flight:
+            self.assertEqual(cli._cmd_run(args), 0)
+        return flight
+
+    def test_a_delayed_run_stands_down_for_a_newer_trigger(self) -> None:
+        # A newer trigger claims the branch while this run sleeps.
+        newer = lambda _s: sd.claim(sd.run_key("/src/web", "feat/a"))
+        self.assertFalse(self._run(newer).called)
+
 if __name__ == "__main__":
     unittest.main()
