@@ -1,7 +1,7 @@
 <h1 align="center">Crux</h1>
 
 <p align="center"><strong>Get to the crux of every pull request.</strong></p>
-<p align="center">Less diff archaeology. More time reviewing what matters.</p>
+<p align="center">More code is being written. Your time to review it isn't growing with it.</p>
 
 <p align="center">
   <a href="#quick-start"><img src="docs/assets/button-get-started.svg" alt="Get started" height="36"></a>
@@ -13,36 +13,62 @@
   <a href="LICENSE">Apache 2.0</a> · Python 3.11+ · <a href="https://sonomos.ai">Sonomos</a>
 </p>
 
-**Crux helps you find the changes worth your attention.** It turns a GitHub PR into one self-updating review card: what changed, why it matters, and which lines deserve a closer look. You still review the code. Crux helps you start in the right place.
+**Crux helps reviewers spend their attention where it matters.** It turns a GitHub pull request into a self-updating review card with the big picture, links to the code worth reading closely, and a clearer place to start.
 
-Originally developed internally by **[Jack Rose](https://www.linkedin.com/in/jack-rose-ba1187174), co-founder of [Sonomos](https://sonomos.ai)**, Crux is a tool we use in our own development and code review. We open-sourced it for teams who'd rather understand a PR than spend the first 20 minutes reconstructing it.
+Originally developed internally by **[Jack Rose](https://www.linkedin.com/in/jack-rose-ba1187174), co-founder of [Sonomos](https://sonomos.ai)**, Crux is a tool we use in our own development and code review. We open-sourced it because this problem is bigger than our team.
 
-## Review the change, not the noise
+## AI made writing code faster. Reviewing it is the bottleneck.
 
-| Without Crux | With Crux |
+AI coding tools can produce substantial changes quickly. A feature that once took days to write can arrive as a large PR with new logic, tests, generated files, cleanup, and dependencies all mixed together. **Someone still has to understand what changed and decide whether it should ship.**
+
+That's harder than just reading more lines.
+
+AI-generated PR summaries help, but they can introduce a different problem: **they don't necessarily allocate explanation in proportion to risk or importance.** A summary can spend paragraphs on straightforward refactoring while giving the one consequential behavior change a sentence. Or it can compress a complicated interaction into a reassuring headline.
+
+Why does that happen?
+
+- **Lost context.** A patch shows edits, not always the surrounding call paths, assumptions, history, or other code that makes an edit important.
+- **Uneven attention.** Large or visually obvious diffs can dominate a summary, even when the change with the most impact is only a few lines.
+- **Hallucination and false confidence.** A plausible explanation can misstate behavior, infer intent that isn't supported, or miss an important dependency.
+- **Fragmented changes.** The real behavior may span files, repositories, or multiple pushes, while a one-off summary describes each piece in isolation.
+- **Summary fatigue.** When every PR comes with another wall of prose, the reviewer is still left asking where to begin.
+
+Imagine a PR with hundreds of lines of routine changes and a three-line permission check. A conventional summary might give both equal attention, or describe the larger chunk in greater detail simply because there's more to say. The reviewer could spend twenty minutes verifying the routine code and barely notice the permission change.
+
+**That's the real cost: not just longer reviews, but attention spent on the wrong things.**
+
+Crux exists to address that problem. **It doesn't ask “How do we summarize every line?” It asks “What should a human reviewer understand and inspect first?”**
+
+## A review guide, not another wall of summary text
+
+Crux combines the diff with structural signals, references, history, nearby tests, and configurable sensitivity checks. It then uses Claude Code to produce a **prioritized reading guide**, rather than treating every edit as equally interesting.
+
+| What a reviewer needs | What Crux provides |
 | --- | --- |
-| Dig through a large diff to figure out its purpose | **The big picture:** a plain-language summary and change context |
-| Guess which edits deserve scrutiny | **Must read** and **Worth a skim** pointers with links to the code |
-| Start over when new commits arrive | **One review card** refreshed in place on later runs |
-| Piece together a feature spanning repositories | **Super PRs** with one combined brief and coordinated merge order |
+| Understand the purpose of the PR | **The big picture:** a short explanation of the change and its context |
+| Find the consequential changes | **Must read:** linked code locations with reasons to inspect them |
+| Triage everything else | **Worth a skim** and a routine-change tally, based on heuristic signals |
+| Connect related edits | **Change maps** and surrounding code references where useful |
+| Avoid starting over after a push | **One living review card** that can be refreshed in place |
+| Review a feature across repositories | **Super PRs** with a combined brief and coordinated landing order |
 
-Small, routine changes can skip model analysis. For substantial changes, Crux adds a starting point, **not** a rubber-stamp approval or a claim that the rest of the diff is safe.
+The point isn't that more words make a review safer. It's that **the right context and the right reading order make a review more useful**. Crux helps you form a hypothesis about where the real risk lives, then gives you links to verify it yourself.
 
-## See the review card
+### See what it actually produces
 
-**[See a real Crux review →](docs/examples/real-pr-review.md)** On [PR #1](https://github.com/sonomoshq/crux/pull/1), a small retry fix, Crux summarized the change, drew a change map, linked the relevant code, and flagged a possible regression for a human to check.
+**[Read a real Crux review →](docs/examples/real-pr-review.md)**
 
-[![Illustrative Crux review card showing the big picture, two must-read changes, and one item worth a skim.](docs/assets/crux-review-example.svg)](docs/examples/review-card.md)
+On [PR #1](https://github.com/sonomoshq/crux/pull/1), Crux reviewed a small fix for retrying a missing generated headline. It explained the change, drew a change map, highlighted relevant code, and raised a specific concern about the retry path. That concern was a prompt for human investigation, **not a verified defect**.
 
-[See the illustrated format and its source links →](docs/examples/review-card.md)
+[![Illustrative Crux review card highlighting the big picture, must-read changes, and lower-priority edits.](docs/assets/crux-review-example.svg)](docs/examples/review-card.md)
 
-*Illustrative example, rendered with Crux's own card renderer and hand-written annotations. Not a captured AI review or benchmark.*
+*The image is an illustrative card rendered with Crux's own renderer and hand-written annotations. The [linked real review](docs/examples/real-pr-review.md) is actual previously published Crux output.*
 
 ## Quick start
 
-Start with a terminal preview. No GitHub comment, bot, or automatic hook is required.
+Start with a local preview. You don't need to install hooks or post anything to GitHub to try Crux.
 
-**1. Install.** You'll need Python 3.11+, Git, [ripgrep](https://github.com/BurntSushi/ripgrep), `pipx`, and an authenticated [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview). See the [full installation guide](docs/reference.md#install) for alternatives and Windows notes.
+**1. Install Crux.** Requirements: Python 3.11+, Git, [ripgrep](https://github.com/BurntSushi/ripgrep), `pipx`, and an authenticated [Claude Code CLI](https://docs.anthropic.com/en/docs/claude-code/overview). The [installation reference](docs/reference.md#install) covers alternatives and Windows notes.
 
 ```sh
 git clone https://github.com/sonomoshq/crux.git
@@ -51,79 +77,76 @@ pipx install .
 pipx ensurepath
 ```
 
-Open a new terminal and check `crux --help`.
+Open a new terminal and confirm that `crux --help` runs.
 
-**2. Choose your repo.** In the **project you want to review**, create or edit `crux.toml`. Its GitHub owner must be explicitly allowlisted:
+**2. Allowlist your repository.** In **the project you want to review**, add or update its `crux.toml`:
 
 ```toml
 [scope]
 owners = ["your-github-org-or-username"]
 ```
 
-Use the owner from that project's `origin` remote, not necessarily `sonomoshq`. Without it, Crux won't analyze the repository.
+Use the owner from that project's `origin` remote. An empty owner list means Crux won't analyze it. [Configuration details →](docs/reference.md#configure)
 
-**3. Preview your committed changes.** From that project's feature branch:
+**3. Preview a committed change.** From your feature branch:
 
 ```sh
 crux preview --base main
 ```
 
-Use your actual target branch in place of `main`. Uncommitted edits are not included. If Crux reports `crux: skipped`, the change satisfied its triviality checks. Add `--no-llm` to see local triage without invoking Claude Code.
+Replace `main` with your target branch. This reads committed changes, not uncommitted edits. Very small changes may return `crux: skipped` because of the configurable review gate. Use `--no-llm` to inspect local triage without invoking Claude.
 
-**4. Publish only when ready.** With an authenticated GitHub CLI (`gh auth login`) and your branch pushed:
+**4. Publish when ready.** Install and authenticate the GitHub CLI (`gh auth login`), push your branch, then run:
 
 ```sh
 crux run
 ```
 
-This finds or can offer to create a PR, updates its title and description, and publishes or refreshes its review card. [Publishing behavior and other prerequisites →](docs/reference.md#install)
+Crux finds or can offer to create a PR, updates its metadata, and posts or refreshes the review card. Publishing is optional; you can stay with terminal previews. [Full publishing behavior →](docs/reference.md#install)
 
-## How it works
+## Under the hood
 
-1. **Gather evidence locally.** Git and ripgrep inspect the committed diff, related code, history, and nearby tests. A configurable gate avoids model review for trivial changes.
-2. **Explain the relevant change.** Crux uses your Claude Code CLI to analyze selected code excerpts and repository context, then organizes a summary and reading priorities.
-3. **Keep one place to review.** Published runs update a single GitHub PR card; optional Slack and Zenhub integrations connect it to your team's workflow.
+1. **Collect context.** Git and ripgrep inspect the committed diff, structural changes, code references, relevant history, and nearby tests.
+2. **Triage before calling the model.** A configurable gate can skip AI analysis for changes that meet its routine-change criteria. Signals such as sensitive paths, dependencies, and impact help determine what merits closer inspection.
+3. **Produce a focused guide.** Claude Code analyzes selected excerpts and repository context. Crux organizes the result into a brief, reading priorities, and code links.
+4. **Refresh the same card.** Later runs update the existing PR review card. Optional integrations extend the workflow to Slack and Zenhub.
 
-Crux runs on your machine, **but it's not an offline AI model**. Relevant source excerpts and context are passed to Claude Code. Review labels are heuristic, and a successful Crux status does not mean tests passed or a human approved the PR. [Details on data flow and configuration →](docs/reference.md#configure)
+**Crux is not a guarantee that a change is safe.** Its priorities and “Safe to skip” labels are heuristic; the model can still miss context or get things wrong. Nothing in a card substitutes for reading the relevant diff, running tests, or human approval. The tool is designed to *direct* judgment, not replace it.
 
-## Commands at a glance
+Crux runs on your machine, but **it is not an offline AI model**: selected code excerpts and repository context are passed to your configured Claude Code CLI. Review your organization's data-handling requirements before enabling it. [Data flow and configuration →](docs/reference.md#how-it-works)
 
-| Command | Use it to |
+## Commands and workflows
+
+| Command | What it's for |
 | --- | --- |
-| `crux preview` | Read a review card in your terminal, without publishing |
-| `crux run` | Post or update the review card on a GitHub PR |
-| `crux prs` | See open PRs across configured repositories |
-| `crux super new` | Review related PRs across multiple repositories together |
-| `crux merge` | Review, approve as an eligible reviewer, and attempt a merge |
-| `crux memory` | Manage the repository facts Crux remembers |
-| `crux zenhub` | Link PRs to tickets and sync merged work |
-| `crux install-hooks` | Add automatic push reviews and related hooks |
+| `crux preview` | Inspect a review card locally without publishing |
+| `crux run` | Post or update a review card on a GitHub PR |
+| `crux prs` | List open PRs across configured repositories |
+| `crux super new` | Bring related PRs into one cross-repository review |
+| `crux merge` | Review and attempt a merge with the relevant permissions |
+| `crux memory` | Manage stored repository facts |
+| `crux zenhub` | Link and sync work with Zenhub |
+| `crux install-hooks` | Install automated Git and Claude Code hooks |
 
-See `crux <command> --help` for options. The [reference guide](docs/reference.md) covers super-PR merge controls, Slack, Zenhub, memory, and the local action service.
+Prefer to stay in Claude Code? The [plugin](docs/reference.md#claude-code-plugin) provides `/crux:preview` and `/crux:run`. You can also configure [automatic reviews](docs/reference.md#hook-up-git-once-per-machine), [super PRs](docs/reference.md#super-prs-optional), [Slack](docs/reference.md#slack-notifications-optional), and [Zenhub](docs/reference.md#zenhub-optional).
 
-## Use it your way
+**Before enabling hooks:** commit-message enrichment is on by default and may amend outgoing commits. Set `[commit] enrich = false` before installing hooks to disable it. Automatic delayed review has a [native Windows limitation](docs/reference.md#windows), and some [cloud sessions](docs/reference.md#cloud-sessions) require manual posting.
 
-- **Prefer Claude Code?** [Install the plugin](docs/reference.md#claude-code-plugin) for `/crux:preview`, `/crux:run`, and automatic hooks.
-- **Want reviews after pushes?** [Install Git hooks](docs/reference.md#hook-up-git-once-per-machine) and configure your repository scope.
-- **Working across services?** [Super PRs](docs/reference.md#super-prs-optional) assemble related changes into one review workflow.
-- **Want team updates?** [Slack](docs/reference.md#slack-notifications-optional) threads reviews; [Zenhub](docs/reference.md#zenhub-optional) links tickets to the code that ships.
+## Documentation
 
-**Before enabling hooks:** commit-message enrichment is on by default and may amend outgoing commits. Set `[commit] enrich = false` before installing hooks if you don't want that behavior. Automatic delayed reviews currently have a [native Windows limitation](docs/reference.md#windows); manual commands remain available. Some [cloud sessions](docs/reference.md#cloud-sessions) require manual GitHub posting.
-
-## More depth, zero guesswork
-
-| Guide | What's inside |
+| Resource | Go here |
 | --- | --- |
-| [Full reference](docs/reference.md) | Setup, config, hooks, Claude Code/cloud, Windows, Slack, Zenhub, super PRs, memory, troubleshooting |
-| [Configuration example](crux.toml.example) | Every option and its intended behavior |
-| [Architecture](DESIGN.md) | Design decisions, implementation, and module contracts |
-| [Contributing guide](CONTRIBUTING.md) | Local setup, tests, issue reports, and PR expectations |
-| [Launch assets](docs/launch-kit.md) | Social images, copy, and repository metadata |
+| Installation, configuration, integrations, troubleshooting | [Full reference](docs/reference.md) |
+| Available settings | [Configuration example](crux.toml.example) |
+| Implementation and architecture | [DESIGN.md](DESIGN.md) |
+| Getting started as a contributor | [CONTRIBUTING.md](CONTRIBUTING.md) |
+| A genuine posted review | [Real Crux review](docs/examples/real-pr-review.md) |
+| Social assets and launch copy | [Launch kit](docs/launch-kit.md) |
 
 ## Help make Crux better
 
-The biggest opportunity: **review cards that explain a change instead of listing it**. We also welcome integrations and improvements to setup, speed, and error messages.
+As AI-assisted development keeps accelerating, the challenge isn't writing longer summaries. It's **helping the reviewer notice the changes that actually deserve attention**.
 
-Try it on a PR you know well. **What did Crux miss?** [Open an issue](https://github.com/sonomoshq/crux/issues/new) with a concrete example or contribute a focused PR. [How to contribute →](CONTRIBUTING.md)
+Try Crux on a PR you understand well. Did it surface the part that mattered? Did it overemphasize something routine, or miss a subtle interaction? [Open an issue](https://github.com/sonomoshq/crux/issues/new/choose) or send a focused PR with a public or sanitized example. [Contribution guide →](CONTRIBUTING.md)
 
 Crux is © 2026 Sonomos, Inc., licensed under [Apache 2.0](LICENSE). See [NOTICE](NOTICE).
