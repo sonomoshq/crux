@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "crux"
 dynamic = ["version"]
-description = "Crux finds the crux of a PR: triaged, causally-ordered review briefings posted to GitHub"
+description = "Code review with a clear starting point: self-updating GitHub PR cards, built at Sonomos"
 # 3.11 floor (needs tomllib): claude.ai/code cloud containers ship 3.11, and
 # the plugin's SessionStart bootstrap must be able to pip-install there.
 requires-python = ">=3.11"

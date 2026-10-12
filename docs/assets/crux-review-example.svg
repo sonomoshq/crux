@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1000" height="660" viewBox="0 0 1000 660" role="img" aria-labelledby="title desc">
+<title id="title">Illustrative Crux review card</title>
+<desc id="desc">A review-card excerpt using hand-written annotations about Crux code. It shows the big picture, two must-read changes, and one item worth a skim.</desc>
+<rect width="1000" height="660" rx="20" fill="#F3F7F4"/>
+<rect x="24" y="24" width="952" height="612" rx="14" fill="#FFFFFF" stroke="#D6DFD9"/>
+<text x="56" y="69" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="27" font-weight="700">Crux</text>
+<text x="143" y="68" fill="#526159" font-family="monospace" font-size="15" font-weight="400">8298583</text>
+<rect x="668" y="42" width="276" height="30" rx="15" fill="#E6F0E9"/>
+<text x="684" y="62" fill="#365345" font-family="Arial, Helvetica, sans-serif" font-size="12" font-weight="700">ILLUSTRATIVE REVIEW EXCERPT</text>
+<text x="56" y="108" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="400">Coordinate repeated review requests from the same branch.</text>
+<path d="M56 132H944" stroke="#E5EBE7"/>
+<text x="56" y="172" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700">The big picture</text>
+<text x="56" y="203" fill="#4D5A52" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400">Nearby push and PR-creation events share a review request key.</text>
+<text x="56" y="231" fill="#4D5A52" font-family="Arial, Helvetica, sans-serif" font-size="19" font-weight="400">Older pending requests stand down before the review begins.</text>
+<circle cx="64" cy="271" r="6" fill="#BC413C"/>
+<text x="82" y="278" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700">Must read</text>
+<text x="56" y="320" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700">Let newer push requests supersede older ones</text>
+<text x="56" y="347" fill="#4D5A52" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400">Check for a newer request before and after waiting for the review lock.</text>
+<text x="56" y="374" fill="#256C49" font-family="monospace" font-size="15" font-weight="400">crux/cli.py:427-439</text>
+<text x="56" y="418" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="21" font-weight="700">Keep coordination local to a clone and branch</text>
+<text x="56" y="445" fill="#4D5A52" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400">The request key includes the checkout path and branch. Other machines have their own</text>
+<text x="56" y="472" fill="#4D5A52" font-family="Arial, Helvetica, sans-serif" font-size="18" font-weight="400">state.</text>
+<text x="56" y="499" fill="#256C49" font-family="monospace" font-size="15" font-weight="400">crux/superdebounce.py:85-88</text>
+<circle cx="64" cy="542" r="6" fill="#B78321"/>
+<text x="82" y="549" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="22" font-weight="700">Worth a skim</text>
+<text x="56" y="583" fill="#1A1A1A" font-family="Arial, Helvetica, sans-serif" font-size="20" font-weight="700">Run if the review lock file cannot be opened</text>
+<text x="56" y="608" fill="#256C49" font-family="monospace" font-size="15" font-weight="400">crux/superdebounce.py:204-215</text>
+</svg>
