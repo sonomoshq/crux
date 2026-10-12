@@ -5,13 +5,13 @@
     "url": "https://github.com/sonomoshq"
   },
   "metadata": {
-    "description": "Self-hosted marketplace for the Crux PR-review plugin. Add with: /plugin marketplace add sonomoshq/crux"
+    "description": "Crux from Sonomos: one clear starting point for code review. Add with: /plugin marketplace add sonomoshq/crux"
   },
   "plugins": [
     {
       "name": "crux",
       "source": "./",
-      "description": "PR review cards from Crux: /crux:preview, /crux:run, and /crux:prs commands, automatic review when a PR ships from a Claude Code session, and session intent capture.",
+      "description": "Self-updating GitHub review cards with focused code pointers. Preview, publish, list PRs, review across repos, and link Zenhub tickets from Claude Code.",
       "category": "code-review"
     }
   ]
