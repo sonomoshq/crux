@@ -5,7 +5,7 @@
 
 <p align="center">
   <a href="#quick-start"><img src="docs/assets/button-get-started.svg" alt="Get started" height="36"></a>
-  <a href="docs/examples/review-card.md"><img src="docs/assets/button-see-example.svg" alt="See a review card" height="36"></a>
+  <a href="docs/examples/real-pr-review.md"><img src="docs/assets/button-see-example.svg" alt="See a review card" height="36"></a>
   <a href="#help-make-crux-better"><img src="docs/assets/button-contribute.svg" alt="Contribute" height="36"></a>
 </p>
 
@@ -30,9 +30,11 @@ Small, routine changes can skip model analysis. For substantial changes, Crux ad
 
 ## See the review card
 
+**[See a real Crux review →](docs/examples/real-pr-review.md)** On [PR #1](https://github.com/sonomoshq/crux/pull/1), a small retry fix, Crux summarized the change, drew a change map, linked the relevant code, and flagged a possible regression for a human to check.
+
 [![Illustrative Crux review card showing the big picture, two must-read changes, and one item worth a skim.](docs/assets/crux-review-example.svg)](docs/examples/review-card.md)
 
-[Explore the full example, with links to actual Crux code →](docs/examples/review-card.md)
+[See the illustrated format and its source links →](docs/examples/review-card.md)
 
 *Illustrative example, rendered with Crux's own card renderer and hand-written annotations. Not a captured AI review or benchmark.*
 
@@ -115,12 +117,13 @@ See `crux <command> --help` for options. The [reference guide](docs/reference.md
 | [Full reference](docs/reference.md) | Setup, config, hooks, Claude Code/cloud, Windows, Slack, Zenhub, super PRs, memory, troubleshooting |
 | [Configuration example](crux.toml.example) | Every option and its intended behavior |
 | [Architecture](DESIGN.md) | Design decisions, implementation, and module contracts |
+| [Contributing guide](CONTRIBUTING.md) | Local setup, tests, issue reports, and PR expectations |
 | [Launch assets](docs/launch-kit.md) | Social images, copy, and repository metadata |
 
 ## Help make Crux better
 
 The biggest opportunity: **review cards that explain a change instead of listing it**. We also welcome integrations and improvements to setup, speed, and error messages.
 
-Try it on a PR you know well. **What did Crux miss?** [Open an issue](https://github.com/sonomoshq/crux/issues/new) with a concrete example or contribute a focused PR. [Development and testing instructions →](docs/reference.md#developing-crux)
+Try it on a PR you know well. **What did Crux miss?** [Open an issue](https://github.com/sonomoshq/crux/issues/new) with a concrete example or contribute a focused PR. [How to contribute →](CONTRIBUTING.md)
 
 Crux is © 2026 Sonomos, Inc., licensed under [Apache 2.0](LICENSE). See [NOTICE](NOTICE).
