@@ -54,6 +54,8 @@ Crux combines the diff with structural signals, references, history, nearby test
 
 The point isn't that more words make a review safer. It's that **the right context and the right reading order make a review more useful**. Crux helps you form a hypothesis about where the real risk lives, then gives you links to verify it yourself.
 
+<a id="see-the-review-card"></a>
+
 ### See what it actually produces
 
 **[Read a real Crux review →](docs/examples/real-pr-review.md)**
@@ -103,6 +105,8 @@ crux run
 ```
 
 Crux finds or can offer to create a PR, updates its metadata, and posts or refreshes the review card. Publishing is optional; you can stay with terminal previews. [Full publishing behavior →](docs/reference.md#install)
+
+<a id="how-it-works"></a>
 
 ## Under the hood
 
