@@ -10,7 +10,7 @@
 </p>
 
 <p align="center">
-  <a href="LICENSE">Apache 2.0</a> · Python 3.11+ · GitHub + Claude Code · <a href="https://sonomos.ai">Sonomos</a>
+  <a href="LICENSE">Apache 2.0</a> · Python 3.11+ · <a href="https://sonomos.ai">Sonomos</a>
 </p>
 
 **Crux helps you find the changes worth your attention.** It turns a GitHub PR into one self-updating review card: what changed, why it matters, and which lines deserve a closer look. You still review the code. Crux helps you start in the right place.
