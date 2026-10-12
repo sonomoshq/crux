@@ -15,7 +15,7 @@
 
 **Crux helps you find the changes worth your attention.** It turns a GitHub PR into one self-updating review card: what changed, why it matters, and which lines deserve a closer look. You still review the code. Crux helps you start in the right place.
 
-Originally developed internally by **Jack Rose, co-founder of [Sonomos](https://sonomos.ai)**, Crux is a tool we use in our own development and code review. We open-sourced it for teams who'd rather understand a PR than spend the first 20 minutes reconstructing it.
+Originally developed internally by **[Jack Rose](https://www.linkedin.com/in/jack-rose-ba1187174), co-founder of [Sonomos](https://sonomos.ai)**, Crux is a tool we use in our own development and code review. We open-sourced it for teams who'd rather understand a PR than spend the first 20 minutes reconstructing it.
 
 ## Review the change, not the noise
 
