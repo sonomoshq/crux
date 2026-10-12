@@ -1,0 +1,52 @@
+name: Bug report
+description: Report a reproducible problem with Crux
+title: "[Bug]: "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. Please search existing issues first.
+        **Security vulnerabilities must be reported privately** using [SECURITY.md](https://github.com/sonomoshq/crux/blob/main/SECURITY.md). Do not post secrets or private source code.
+  - type: checkboxes
+    id: preflight
+    attributes:
+      label: Before you submit
+      options:
+        - label: I searched existing issues for this problem.
+          required: true
+        - label: This report does not disclose a security vulnerability or confidential data.
+          required: true
+  - type: textarea
+    id: problem
+    attributes:
+      label: What happened?
+      description: Describe the actual result and how it differs from what you expected.
+      placeholder: "I ran crux preview and expected a review card, but ..."
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Steps to reproduce
+      description: Use a public or minimal test repository if possible. Redact any identifiers, secrets, and tokens.
+      placeholder: |
+        1. Install Crux...
+        2. Configure [scope] owners...
+        3. Run crux preview --base main...
+        4. Observe...
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, Python version, Crux version or commit, Git version, and relevant CLI/integration versions.
+      placeholder: "OS: ...\nPython: ...\nCrux version/commit: ..."
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Sanitized logs or screenshots (optional)
+      description: Only include information you're comfortable making public. Never paste GitHub, Slack, or Zenhub tokens, private code, or personal data.
+      render: text
