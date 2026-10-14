@@ -78,6 +78,12 @@ def highest_brief(home: str) -> int:
     replaced by a stranger's, and the brief they were shown reviews PRs they
     never picked.
 
+    Every issue and PR in the repo counts, not only tagged briefs: GitHub
+    numbers them all from one sequence, so an untagged issue filed by hand
+    (Super-PRs#19) would otherwise leave every later bundle one behind its
+    brief ("Super PR #20" filed as issue #21). Counting them keeps the next
+    bundle's number equal to the issue number its brief is about to get.
+
     Returns 0 when the repo cannot be read, so an unreachable home or an
     unauthenticated `gh` degrades to the local-only answer rather than blocking
     a create that is otherwise fine.
@@ -87,6 +93,9 @@ def highest_brief(home: str) -> int:
         match = _SUPER_TAG.search(str(row.get("title", "")))
         if match:
             highest = max(highest, int(match.group(1)))
+        number = row.get("number")
+        if isinstance(number, int):
+            highest = max(highest, number)
     return highest
 
 

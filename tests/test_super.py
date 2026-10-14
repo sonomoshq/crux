@@ -212,12 +212,14 @@ class TestBundleStore(unittest.TestCase):
                                side_effect=CruxError("gh: not authenticated")):
             self.assertEqual(bundle_store.next_number("o/Super"), 2)
 
-    def test_untagged_issues_in_the_home_repo_are_ignored(self) -> None:
-        """The home repo is a normal repo; only Crux's own tag names a bundle."""
+    def test_untagged_issues_in_the_home_repo_still_use_up_numbers(self) -> None:
+        """Only Crux's tag names a bundle, but GitHub numbers every issue from
+        one sequence: skipping untagged ones left each later bundle one behind
+        its own brief (Super PR #20 filed as Super-PRs#21)."""
         with mock.patch.object(
                 superpost.post, "_run_gh",
                 return_value=self._issues("flaky CI on main", "bump deps")):
-            self.assertEqual(bundle_store.next_number("o/Super"), 1)
+            self.assertEqual(bundle_store.next_number("o/Super"), 3)
 
     def test_no_home_repo_asks_github_nothing(self) -> None:
         bundle_store.save(self._bundle(1, [10]))
@@ -1819,6 +1821,29 @@ class TestRestart(unittest.TestCase):
         parsed = cli._build_parser().parse_args(["serve", "--restart"])
         self.assertTrue(parsed.restart)
         self.assertFalse(parsed.stop)
+
+
+class TestHighestBrief(unittest.TestCase):
+    """The next bundle number has to track the brief repo's issue numbers."""
+
+    def test_an_untagged_issue_still_uses_up_its_number(self) -> None:
+        # Super-PRs#19 was filed by hand, untagged; counting only tags made
+        # every later bundle one behind its issue (Super PR #20 = issue #21).
+        rows = [{"number": 18, "title": "Super PR #18: x [super-pr-18]"},
+                {"number": 19, "title": "Super PR: clean-room, by hand"}]
+        with mock.patch.object(superpost, "_issue_titles", return_value=rows):
+            self.assertEqual(superpost.highest_brief("o/S"), 19)
+
+    def test_a_tag_ahead_of_the_issue_numbers_still_wins(self) -> None:
+        # Bundles already one behind keep their numbers; the next must not
+        # collide with a tag that is higher than its own issue number.
+        rows = [{"number": 21, "title": "Super PR #25: y [super-pr-25]"}]
+        with mock.patch.object(superpost, "_issue_titles", return_value=rows):
+            self.assertEqual(superpost.highest_brief("o/S"), 25)
+
+    def test_an_unreadable_repo_is_zero(self) -> None:
+        with mock.patch.object(superpost, "_issue_titles", return_value=[]):
+            self.assertEqual(superpost.highest_brief("o/S"), 0)
 
 
 class TestBriefCarriesItsOwnState(unittest.TestCase):
