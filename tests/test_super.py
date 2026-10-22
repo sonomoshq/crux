@@ -1221,6 +1221,29 @@ class TestBriefButtons(unittest.TestCase):
         self.assertIn("_TOKEN", Path(serve.__file__).read_text(encoding="utf-8"))
         self.assertTrue(serve._TOKEN)
 
+    def test_a_per_pr_post_reaches_the_pr_merge(self) -> None:
+        # The per-PR card's buttons POST to /pr/<owner>/<repo>/<n>/<action>;
+        # do_POST used to unpack the super-PR route unconditionally and crash.
+        import http.server
+        import threading
+        import urllib.parse
+        import urllib.request
+        import crux.serve as serve
+        httpd = http.server.ThreadingHTTPServer(("127.0.0.1", 0), serve.Handler)
+        threading.Thread(target=httpd.serve_forever, daemon=True).start()
+        try:
+            for action, admin in (("merge", False), ("admin-merge", True)):
+                with mock.patch.object(serve, "do_pr_merge", return_value=b"done") as act:
+                    req = urllib.request.Request(
+                        f"http://127.0.0.1:{httpd.server_port}/pr/o/r/5/{action}",
+                        data=urllib.parse.urlencode({"token": serve._TOKEN}).encode())
+                    with urllib.request.urlopen(req, timeout=5) as resp:
+                        self.assertEqual(resp.status, 200)
+                act.assert_called_once_with("o/r", 5, admin=admin)
+        finally:
+            httpd.shutdown()
+            httpd.server_close()
+
     def test_the_superhero_marks_the_card_and_the_slack_post(self) -> None:
         lines = superrender.render_actions(self._bundle(), Config())
         self.assertIn("🦸", "\n".join(lines))

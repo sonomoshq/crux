@@ -420,14 +420,6 @@ class Handler(http.server.BaseHTTPRequestHandler):
         if route is None:
             self._send(_page("Crux", "<h1>Crux</h1><p>Nothing here.</p>"), 404)
             return
-        if pr_route is not None:
-            slug, pr, action = pr_route
-            if action in ("merge", "admin-merge"):
-                self._send(do_pr_merge(slug, pr, admin=action == "admin-merge"))
-            else:
-                self._send(_page("Crux", "<p>Nothing here.</p>"), 404)
-            return
-
         number, action = route
         bundle = self._bundle(number)
         if bundle is None:
@@ -472,6 +464,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 "<p class=stop>This page was made by an older <code>crux "
                 "serve</code>. Reload it from the brief and press again.</p>"
             )), 403)
+            return
+
+        if pr_route is not None:
+            slug, pr, action = pr_route
+            if action in ("merge", "admin-merge"):
+                self._send(do_pr_merge(slug, pr, admin=action == "admin-merge"))
+            else:
+                self._send(_page("Crux", "<p>Nothing here.</p>"), 404)
             return
 
         number, action = route
