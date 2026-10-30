@@ -115,6 +115,18 @@ query CruxIssueByInfo($repo: Int!, $number: Int!) {
 }
 """
 
+Q_ISSUE_BY_NUMBER = _ISSUE_TYPE + """
+query CruxIssueByNumber($id: ID!, $number: Int!) {
+  workspace(id: $id) {
+    zenhubIssueByNumber(number: $number) {
+      id number title body state pullRequest htmlUrl
+      issueType { ...CruxIssueType }
+      repository { ghId name ownerName }
+    }
+  }
+}
+"""
+
 M_CLOSE_ISSUES = """
 mutation CruxCloseIssues($input: CloseIssuesInput!) {
   closeIssues(input: $input) { clientMutationId }
@@ -319,6 +331,10 @@ def done_pipeline_id(cfg: Config) -> str:
 
 def _ticket(node: dict, pipeline: str = "") -> ZenTicket:
     repo = node.get("repository") or {}
+    if not repo.get("ghId"):
+        # A Zenhub-native ticket sits in a placeholder repo ("NoOwner/<ws>",
+        # ghId 0) that names nothing on GitHub; it is known by ZH-N instead.
+        repo = {}
     pipe = pipeline
     if not pipe:
         holder = node.get("pipelineIssue") or {}
@@ -408,6 +424,23 @@ def issue_by_ref(cfg: Config, slug: str, number: int) -> ZenTicket | None:
         return None
     if node.get("pullRequest"):
         log.warning("zenhub: %s#%d is a pull request, not a ticket", slug, number)
+        return None
+    return _ticket(node)
+
+
+def issue_by_number(cfg: Config, number: int) -> ZenTicket | None:
+    """Resolve a Zenhub-native ticket, ZH-N, which has no GitHub repo to look
+    it up through (so `issue_by_ref` cannot find it)."""
+    wid = workspace_id(cfg)
+    if not wid:
+        return None
+    data = _call(cfg, Q_ISSUE_BY_NUMBER, {"id": wid, "number": int(number)},
+                 op="zenhubIssueByNumber")
+    node = ((data or {}).get("workspace") or {}).get("zenhubIssueByNumber")
+    if not isinstance(node, dict) or not node.get("id"):
+        log.warning("zenhub: no ticket ZH-%d in this workspace", number)
+        return None
+    if node.get("pullRequest"):
         return None
     return _ticket(node)
 
@@ -518,4 +551,4 @@ def describe(ticket: ZenTicket) -> str:
     """"owner/repo#29" — how a human refers to a ticket."""
     if ticket.owner and ticket.repo:
         return f"{ticket.owner}/{ticket.repo}#{ticket.number}"
-    return f"#{ticket.number}"
+    return f"ZH-{ticket.number}"  # Zenhub-native: no GitHub repo

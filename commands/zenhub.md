@@ -14,12 +14,17 @@ yourself: it asks for a secret on a terminal you do not have.
 Pick the verb from what the user asked for:
 
 Note that the ordinary way a ticket gets linked is the **pre-push** question,
-which fires on `git push` when a human is at the terminal. Everything below is
+which fires on `git push` when a human is at the terminal. A PR opened with no
+terminal (an agent session, CI) is still linked when its branch, title,
+description or commits name the ticket as `ZH-N` or a Zenhub URL — Crux does
+that itself after the review, and only when Zenhub is configured. Everything
+below is
 for linking outside that flow — a PR Crux did not open, a wrong answer, or a
 push made where there was no terminal to ask on.
 
 - **"link this to ticket N", "this closes ZH-29"** → `crux zenhub link`.
-  Run it with `--issue N` when the user named the ticket. With no `--issue` it
+  Run it with `--issue N` (or `--issue ZH-N` for a Zenhub-only ticket) when
+  the user named the ticket. With no `--issue` it
   shows a ranked list and prompts on a terminal — which you do not have, so it
   will link nothing. Instead run `crux zenhub link --issue <N>` once the user
   has named the ticket, or show them the candidates yourself and ask IN CHAT

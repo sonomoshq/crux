@@ -54,6 +54,11 @@ EXCERPT_CHARS = 200
 _REF_RE = re.compile(r"(?:^|[^0-9A-Za-z])(?:#|issue[-_/]?|zh-|gh-)(\d{1,6})\b",
                      re.IGNORECASE)
 _LEADING_NUM_RE = re.compile(r"^(\d{1,6})[-_]")
+# Unambiguous Zenhub-native references only: `ZH-341` / `zh_341` / `ZH 341`,
+# or a Zenhub app URL ending `/issues/zh/341`. Enough to link without asking;
+# a bare `#341` is not (it is as likely a GitHub PR as a ticket).
+_ZH_NAMED_RE = re.compile(
+    r"(?:\bzh[-_ #/]?|app\.zenhub\.com/\S*?/issues/zh/)(\d{1,6})\b", re.IGNORECASE)
 # Words too common to say anything about which ticket a branch is about.
 _STOP = frozenset("""
 a an and the of for to in on at by with from is are be as it this that fix
@@ -260,6 +265,19 @@ def referenced_numbers(*texts: str) -> set[int]:
                 found.add(int(lead.group(1)))
         for match in _REF_RE.finditer(text or ""):
             found.add(int(match.group(1)))
+    return found
+
+
+def named_zh_numbers(*texts: str) -> list[int]:
+    """Zenhub-native ticket numbers named unambiguously (ZH-N or a Zenhub URL),
+    in order of first mention. Unlike `referenced_numbers` these are trusted
+    enough to link with no one confirming."""
+    found: list[int] = []
+    for text in texts:
+        for match in _ZH_NAMED_RE.finditer(text or ""):
+            number = int(match.group(1))
+            if number not in found:
+                found.append(number)
     return found
 
 

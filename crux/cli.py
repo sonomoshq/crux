@@ -601,6 +601,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # summary + overview — a curated account of the branch, replacing the
         # raw commit list (D19). --no-llm leaves the annotation empty, so the
         # commit-based placeholder title and description stay.
+        # Read before the sync below rewrites it: a ticket the author named
+        # in the description (ZH-341) is how the auto-link finds it.
+        authored = post.pr_text(info, pr)
         post.sync_pr_metadata(info, pr, title=annotation.pr_title or None,
                               summary=annotation.summary,
                               overview=annotation.overview)
@@ -617,7 +620,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # `crux run` there is a terminal, so the picker is offered directly.
         # Silent either way unless [zenhub] workspace is set.
         import crux.zenlink as zenlink
-        if not _zen_apply_pending(cfg, info, pr):
+        if not _zen_apply_pending(cfg, info, pr) and not _zen_auto_link(
+                cfg, info, pr, [info.branch, authored] + post._commit_subjects(info)):
             _zen_offer(cfg, f"{info.owner}/{info.repo}#{pr}",
                        zenlink.pr_key(info.owner, info.repo, pr),
                        [info.branch, annotation.pr_title or ""]
@@ -1627,11 +1631,19 @@ def _zen_pick(cfg, hints: list[str], what: str, explicit: list[str],
     if explicit:
         chosen = []
         for ref in explicit:
+            native = zenlink.named_zh_numbers(ref)
+            if native:
+                ticket = zenhub.issue_by_number(cfg, native[0])
+                if ticket is None:
+                    print(f"⚠️  no Zenhub ticket ZH-{native[0]} in this workspace")
+                    continue
+                chosen.append(ticket)
+                continue
             slug, _, number = ref.rpartition("#")
             slug = slug or default_slug
             if not number.isdigit():
                 print(f"⚠️  {ref!r} is not an issue reference "
-                      f"(try 29, #29, or owner/repo#29)")
+                      f"(try 29, #29, owner/repo#29, or ZH-29)")
                 continue
             ticket = zenhub.issue_by_ref(cfg, slug, int(number))
             if ticket is None:
@@ -1749,6 +1761,43 @@ def _zen_apply_pending(cfg, info, pr: int) -> bool:
         log.warning("zenhub: could not apply the pre-push ticket choice for "
                     "%s (%s)", info.branch, exc)
         return True
+
+
+def _zen_auto_link(cfg, info, pr: int, texts: list[str]) -> bool:
+    """Link the Zenhub tickets the branch, PR or commits name as ZH-N.
+
+    The no-terminal route in: a PR opened from an agent session or CI never
+    sees the pre-push question, but the author already said which ticket in
+    writing. Only when Zenhub is configured (workspace AND key) and nothing is
+    linked yet. True when it linked something. Never raises.
+    """
+    import crux.post as post
+    import crux.zenhub as zenhub
+    import crux.zenlink as zenlink
+    log = logging.getLogger(LOG_NAME)
+    if not zenhub.enabled(cfg):
+        return False
+    key = zenlink.pr_key(info.owner, info.repo, pr)
+    if zenlink.get(key) is not None:
+        return False
+    numbers = zenlink.named_zh_numbers(*texts)
+    if not numbers:
+        return False
+    try:
+        picked = [t for t in (zenhub.issue_by_number(cfg, n) for n in numbers)
+                  if t is not None and not t.planning]
+        if not picked:
+            return False
+        slug = f"{info.owner}/{info.repo}"
+        for problem in zenlink.attach(cfg, key, picked, [f"{slug}#{pr}"], [(slug, pr)]):
+            log.warning("zenhub: %s", problem)
+        names = ", ".join(zenhub.describe(t) for t in picked)
+        post.notify_tty(f"🎫 Crux: {slug}#{pr} will close {names}")
+        log.info("zenhub: auto-linked %s#%d to %s", slug, pr, names)
+        return True
+    except Exception as exc:  # noqa: BLE001 — the review is already posted
+        log.warning("zenhub: could not auto-link %s#%d (%s)", info.owner, pr, exc)
+        return False
 
 
 def _zen_offer(cfg, what: str, key: str, hints: list[str], prs: list[str],
