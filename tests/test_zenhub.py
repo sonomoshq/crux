@@ -327,6 +327,41 @@ class IssueByRefTest(unittest.TestCase):
         opened.assert_not_called()
 
 
+def _native(number, **kw):
+    node = _issue(number, **kw)
+    node["repository"] = {"ghId": 0, "name": "Engineering", "ownerName": "NoOwner"}
+    return node
+
+
+class IssueByNumberTest(unittest.TestCase):
+    def test_a_native_ticket_is_named_zh_not_by_its_placeholder_repo(self):
+        answer = {"data": {"workspace": {"zenhubIssueByNumber": _native(341)}}}
+        with _KeyEnv():
+            with mock.patch("crux.zenhub.workspace_id", return_value="w1"):
+                with mock.patch("urllib.request.urlopen", return_value=_Resp(answer)):
+                    found = zenhub.issue_by_number(cfg_on(), 341)
+        self.assertEqual(zenhub.describe(found), "ZH-341")
+
+    def test_a_missing_ticket_is_none(self):
+        answer = {"data": {"workspace": {"zenhubIssueByNumber": None}}}
+        with _KeyEnv():
+            with mock.patch("crux.zenhub.workspace_id", return_value="w1"):
+                with mock.patch("urllib.request.urlopen", return_value=_Resp(answer)):
+                    with self.assertLogs("crux.zenhub", level="WARNING"):
+                        self.assertIsNone(zenhub.issue_by_number(cfg_on(), 9))
+
+
+class NamedZhTest(unittest.TestCase):
+    def test_only_unambiguous_forms_count(self):
+        self.assertEqual(zenlink.named_zh_numbers(
+            "fix/zh-341-signout", "Closes ZH 12 and #77",
+            "https://app.zenhub.com/workspaces/x-1/issues/zh/341", "pr 99"),
+            [341, 12])
+
+    def test_words_that_merely_contain_zh_do_not(self):
+        self.assertEqual(zenlink.named_zh_numbers("bazh-3", "zhone 4"), [])
+
+
 # ---------------------------------------------------------------------------
 # Closing
 # ---------------------------------------------------------------------------
@@ -1024,6 +1059,50 @@ class ApplyPendingTest(unittest.TestCase):
                     with self.assertLogs("crux", level="WARNING"):
                         self.assertTrue(self.cli._zen_apply_pending(
                             cfg_on(), self.info, 42))
+
+
+class AutoLinkTest(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patch = mock.patch("pathlib.Path.home",
+                           return_value=__import__("pathlib").Path(self.tmp.name))
+        patch.start()
+        self.addCleanup(patch.stop)
+        env = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.tmp.name})
+        env.start()
+        self.addCleanup(env.stop)
+        import crux.cli as cli
+        self.cli = cli
+        self.info = make_info()
+
+    def test_a_ticket_named_in_the_pr_is_linked_without_asking(self):
+        with _KeyEnv():
+            with mock.patch("crux.zenhub.issue_by_number",
+                            return_value=ticket(341, "Sign-out cookie")) as looked:
+                with mock.patch("crux.zenhub.connect_pr", return_value=True):
+                    with mock.patch("crux.superpost._upsert"):
+                        with mock.patch("crux.post.notify_tty"):
+                            linked = self.cli._zen_auto_link(
+                                cfg_on(), self.info, 42, ["fix/x", "Closes ZH-341"])
+        self.assertTrue(linked)
+        looked.assert_called_once_with(mock.ANY, 341)
+        link = zenlink.get("pr:example-org/Widget#42")
+        self.assertEqual([t.number for t in link.tickets], [341])
+
+    def test_without_zenhub_creds_it_does_nothing(self):
+        with mock.patch.dict(os.environ, {"ZENHUB_API_KEY": ""}):
+            with mock.patch("crux.zenhub.issue_by_number") as looked:
+                self.assertFalse(self.cli._zen_auto_link(
+                    cfg_on(), self.info, 42, ["Closes ZH-341"]))
+        looked.assert_not_called()
+
+    def test_nothing_named_falls_through_to_the_picker(self):
+        with _KeyEnv():
+            with mock.patch("crux.zenhub.issue_by_number") as looked:
+                self.assertFalse(self.cli._zen_auto_link(
+                    cfg_on(), self.info, 42, ["fix/signout", "#341"]))
+        looked.assert_not_called()
 
 
 class NoteIfOffTest(unittest.TestCase):
