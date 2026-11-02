@@ -420,7 +420,12 @@ def _pick_from(data: dict, ids: dict[str, ZenTicket]) -> tuple[ZenTicket, str, s
     confidence = str(data.get("confidence") or "").strip().lower()
     if confidence not in ("high", "medium", "low"):
         confidence = "low"
-    return ticket, confidence, _one_line(str(data.get("reason") or ""), 200)
+    # The model names tickets by the T-ids it was shown; a reader of the PR
+    # note knows them as ZH-341 or owner/repo#29.
+    reason = re.sub(r"\bT\d+\b",
+                    lambda m: zenhub.describe(ids[m.group(0)]) if m.group(0) in ids
+                    else m.group(0), str(data.get("reason") or ""))
+    return ticket, confidence, _one_line(reason, 200)
 
 
 def match_ticket(cfg: Config, tickets: list[ZenTicket],

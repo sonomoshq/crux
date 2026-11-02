@@ -1377,6 +1377,12 @@ class MatchTicketTest(unittest.TestCase):
             {"match": None, "confidence": "low", "reason": "nothing fits"})
         self.assertIsNone(found)
 
+    def test_the_reason_names_tickets_the_way_people_do(self):
+        found, _ = self._match({"match": "T1", "confidence": "high",
+                                "shortlist": [], "reason": "T1 is the same work as T2"})
+        self.assertEqual(found[2], "example-org/Widget#1 is the same work as "
+                                   "example-org/Widget#2")
+
     def test_an_unknown_id_is_no_match(self):
         found, _ = self._match(
             {"match": "T99", "confidence": "high", "shortlist": [], "reason": ""})
