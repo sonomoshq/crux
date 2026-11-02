@@ -58,6 +58,13 @@ _WORKSPACE_ID = re.compile(r"^[0-9a-f]{24}$")
 # an ID, and a single `crux run` may link several tickets.
 _ws_cache: dict[str, str] = {}
 _ghid_cache: dict[str, int] = {}
+# `check()`'s verdict, per (workspace, key) — one round trip per process, not
+# one per Zenhub step. "" means ready; anything else is the reason it is not.
+_check_cache: dict[tuple[str, str], str] = {}
+# Why the most recent `_call` came back empty: "auth", "network", "schema",
+# "error", or "" when it worked. `check()` reads it to tell a rejected key
+# apart from a network blip, which need different fixes.
+_last_failure = ""
 
 
 # ---------------------------------------------------------------------------
@@ -70,6 +77,16 @@ Q_WORKSPACE_BY_NAME = """
 query CruxFindWorkspace($q: String!) {
   viewer { searchWorkspaces(query: $q) { nodes { id name } } }
 }
+"""
+
+# Who the key belongs to. The cheapest call that proves the key is accepted
+# (install.py asks the same question when it stores one).
+Q_VIEWER = """
+query CruxViewer { viewer { id } }
+"""
+
+Q_WORKSPACE_BY_ID = """
+query CruxWorkspaceById($id: ID!) { workspace(id: $id) { id name } }
 """
 
 Q_PIPELINES = """
@@ -111,6 +128,18 @@ query CruxIssueByInfo($repo: Int!, $number: Int!) {
     id number title body state pullRequest htmlUrl
     issueType { ...CruxIssueType }
     repository { ghId name ownerName }
+  }
+}
+"""
+
+Q_ISSUE_BY_NUMBER = _ISSUE_TYPE + """
+query CruxIssueByNumber($id: ID!, $number: Int!) {
+  workspace(id: $id) {
+    zenhubIssueByNumber(number: $number) {
+      id number title body state pullRequest htmlUrl
+      issueType { ...CruxIssueType }
+      repository { ghId name ownerName }
+    }
   }
 }
 """
@@ -190,12 +219,78 @@ def why_disabled(cfg: Config) -> str:
             f'made at https://app.zenhub.com/settings/tokens).')
 
 
+def check(cfg: Config) -> str:
+    """"" when Zenhub is set up AND works; otherwise one sentence saying why not.
+
+    `enabled()` only says the two settings are present. This goes further and
+    asks Zenhub: is the key accepted, and does the workspace exist? Every
+    Zenhub step Crux takes on its own goes through here first, so a typo'd
+    workspace or an expired key is a quiet skip with a reason in the log —
+    never a half-done link or a run that warns on every call.
+
+    Asked once per process per (workspace, key). A network failure is not
+    cached, so a later step in the same run gets to try again.
+    """
+    if not enabled(cfg):
+        return why_disabled(cfg)
+    cache_key = (cfg.zenhub_workspace.strip(), _token(cfg))
+    if cache_key in _check_cache:
+        return _check_cache[cache_key]
+    verdict = _check_live(cfg)
+    if _last_failure != "network":
+        _check_cache[cache_key] = verdict
+    return verdict
+
+
+def _check_live(cfg: Config) -> str:
+    data = _call(cfg, Q_VIEWER, op="viewer")
+    if not ((data or {}).get("viewer") or {}).get("id"):
+        if _last_failure == "network":
+            return "could not reach Zenhub (network) — try again in a moment"
+        return (f"Zenhub did not accept the API key — make a new one at "
+                f"https://app.zenhub.com/settings/tokens and run "
+                f"`crux zenhub setup` (or set ${cfg.zenhub_token_env})")
+    configured = cfg.zenhub_workspace.strip()
+    if _WORKSPACE_ID.match(configured):
+        data = _call(cfg, Q_WORKSPACE_BY_ID, {"id": configured}, op="workspace")
+        found = bool(((data or {}).get("workspace") or {}).get("id"))
+    else:
+        found = bool(workspace_id(cfg))
+    if not found:
+        if _last_failure == "network":
+            return "could not reach Zenhub (network) — try again in a moment"
+        return (f"the key works, but Zenhub has no workspace "
+                f"{configured!r} that this key can see — check [zenhub] "
+                f"workspace in crux.toml (a name, or the ID from the app URL)")
+    return ""
+
+
+def key_problem(cfg: Config, key: str) -> str:
+    """"" when Zenhub accepts *key*, else why not — for `crux zenhub setup`,
+    which must test the key it was handed before saving it, not whatever an
+    environment variable happens to hold."""
+    data = _call(cfg, Q_VIEWER, op="viewer", token=key)
+    if ((data or {}).get("viewer") or {}).get("id"):
+        return ""
+    if _last_failure == "network":
+        return "could not reach Zenhub (network)"
+    return "Zenhub did not accept that key"
+
+
+def ready(cfg: Config) -> bool:
+    """Whether Crux may do anything Zenhub-shaped right now. See `check`."""
+    verdict = check(cfg)
+    if verdict and enabled(cfg):
+        log.info("zenhub: skipping — %s", verdict)
+    return not verdict
+
+
 # ---------------------------------------------------------------------------
 # The transport
 # ---------------------------------------------------------------------------
 
 def _call(cfg: Config, query: str, variables: dict | None = None,
-          op: str = "") -> dict | None:
+          op: str = "", token: str = "") -> dict | None:
     """POST one GraphQL document. Returns the `data` object, or None.
 
     GraphQL answers 200 with an `errors` array, so a failure never arrives as
@@ -203,7 +298,9 @@ def _call(cfg: Config, query: str, variables: dict | None = None,
     schema moved) is called out by name rather than logged as a generic
     failure, because that is the one failure `crux zenhub doctor` exists for.
     """
-    token = _token(cfg)
+    global _last_failure
+    _last_failure = "auth"
+    token = token or _token(cfg)
     if not token:
         return None
     payload = json.dumps({"query": query, "variables": variables or {}})
@@ -221,6 +318,7 @@ def _call(cfg: Config, query: str, variables: dict | None = None,
             detail = exc.read().decode("utf-8", "replace")[:200]
         except Exception:
             pass
+        _last_failure = "auth" if exc.code in (401, 403) else "error"
         if exc.code in (401, 403):
             log.warning("zenhub %s: the API key was rejected (HTTP %d) — make "
                         "a fresh one at https://app.zenhub.com/settings/tokens",
@@ -229,6 +327,7 @@ def _call(cfg: Config, query: str, variables: dict | None = None,
             log.warning("zenhub %s failed: HTTP %d %s", op or "call", exc.code, detail)
         return None
     except (urllib.error.URLError, OSError, ValueError) as exc:
+        _last_failure = "network"
         log.warning("zenhub %s failed: %s", op or "call", exc)
         return None
 
@@ -236,14 +335,18 @@ def _call(cfg: Config, query: str, variables: dict | None = None,
     if errors:
         messages = [str(e.get("message", e)) for e in errors if isinstance(e, dict)]
         joined = "; ".join(messages) or str(errors)
-        if any("Cannot query field" in m or "Unknown argument" in m
-               or "Unknown type" in m for m in messages):
+        schema = any("Cannot query field" in m or "Unknown argument" in m
+                     or "Unknown type" in m for m in messages)
+        auth = any("auth" in m.lower() or "token" in m.lower() for m in messages)
+        _last_failure = "schema" if schema else "auth" if auth else "error"
+        if schema:
             log.warning("zenhub %s: this Crux does not match the Zenhub schema "
                         "(%s) — run `crux zenhub doctor`", op or "call", joined)
         else:
             log.warning("zenhub %s error: %s", op or "call", joined)
         return None
     data = body.get("data")
+    _last_failure = "" if isinstance(data, dict) else "error"
     return data if isinstance(data, dict) else None
 
 
@@ -319,6 +422,10 @@ def done_pipeline_id(cfg: Config) -> str:
 
 def _ticket(node: dict, pipeline: str = "") -> ZenTicket:
     repo = node.get("repository") or {}
+    if not repo.get("ghId"):
+        # A Zenhub-native ticket sits in a placeholder repo ("NoOwner/<ws>",
+        # ghId 0) that names nothing on GitHub; it is known by ZH-N instead.
+        repo = {}
     pipe = pipeline
     if not pipe:
         holder = node.get("pipelineIssue") or {}
@@ -408,6 +515,23 @@ def issue_by_ref(cfg: Config, slug: str, number: int) -> ZenTicket | None:
         return None
     if node.get("pullRequest"):
         log.warning("zenhub: %s#%d is a pull request, not a ticket", slug, number)
+        return None
+    return _ticket(node)
+
+
+def issue_by_number(cfg: Config, number: int) -> ZenTicket | None:
+    """Resolve a Zenhub-native ticket, ZH-N, which has no GitHub repo to look
+    it up through (so `issue_by_ref` cannot find it)."""
+    wid = workspace_id(cfg)
+    if not wid:
+        return None
+    data = _call(cfg, Q_ISSUE_BY_NUMBER, {"id": wid, "number": int(number)},
+                 op="zenhubIssueByNumber")
+    node = ((data or {}).get("workspace") or {}).get("zenhubIssueByNumber")
+    if not isinstance(node, dict) or not node.get("id"):
+        log.warning("zenhub: no ticket ZH-%d in this workspace", number)
+        return None
+    if node.get("pullRequest"):
         return None
     return _ticket(node)
 
@@ -518,4 +642,4 @@ def describe(ticket: ZenTicket) -> str:
     """"owner/repo#29" — how a human refers to a ticket."""
     if ticket.owner and ticket.repo:
         return f"{ticket.owner}/{ticket.repo}#{ticket.number}"
-    return f"#{ticket.number}"
+    return f"ZH-{ticket.number}"  # Zenhub-native: no GitHub repo

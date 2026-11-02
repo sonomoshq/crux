@@ -601,6 +601,9 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # summary + overview — a curated account of the branch, replacing the
         # raw commit list (D19). --no-llm leaves the annotation empty, so the
         # commit-based placeholder title and description stay.
+        # Read before the sync below rewrites it: a ticket the author named
+        # in the description (ZH-341) is how the auto-link finds it.
+        authored = post.pr_text(info, pr)
         post.sync_pr_metadata(info, pr, title=annotation.pr_title or None,
                               summary=annotation.summary,
                               overview=annotation.overview)
@@ -616,14 +619,28 @@ def _cmd_run(args: argparse.Namespace) -> int:
         # this run is detached and could not have asked. On a foreground
         # `crux run` there is a terminal, so the picker is offered directly.
         # Silent either way unless [zenhub] workspace is set.
+        # Tried in order, first one wins: the pre-push answer (even "none"),
+        # a ticket named outright as ZH-N, then — last resort — Claude reading
+        # the open tickets for the one this PR implements. At a terminal that
+        # match only goes first in the picker; with none, it links only when
+        # Claude is sure. Every step is a no-op unless Zenhub is set up AND
+        # its key and workspace actually work (zenhub.check).
         import crux.zenlink as zenlink
-        if not _zen_apply_pending(cfg, info, pr):
-            _zen_offer(cfg, f"{info.owner}/{info.repo}#{pr}",
-                       zenlink.pr_key(info.owner, info.repo, pr),
-                       [info.branch, annotation.pr_title or ""]
-                       + post._commit_subjects(info),
-                       [f"{info.owner}/{info.repo}#{pr}"],
-                       [(f"{info.owner}/{info.repo}", pr)])
+        subjects = post._commit_subjects(info)
+        if not _zen_apply_pending(cfg, info, pr) and not _zen_auto_link(
+                cfg, info, pr, [info.branch, authored] + subjects):
+            linked, best, tickets = False, "", None
+            if not args.no_llm:
+                linked, best, tickets = _zen_match(
+                    cfg, info, pr,
+                    _zen_pr_context(info, annotation, authored, subjects))
+            if not linked:
+                _zen_offer(cfg, f"{info.owner}/{info.repo}#{pr}",
+                           zenlink.pr_key(info.owner, info.repo, pr),
+                           [info.branch, annotation.pr_title or ""] + subjects,
+                           [f"{info.owner}/{info.repo}#{pr}"],
+                           [(f"{info.owner}/{info.repo}", pr)],
+                           best_id=best, tickets=tickets)
 
         # D31: absorb the review's durable repo facts into the memory store,
         # and retire the ones this PR proved wrong (D36) — only after the card
@@ -1619,7 +1636,8 @@ def _zen_offer_bundle(cfg, bundle) -> None:
 
 
 def _zen_pick(cfg, hints: list[str], what: str, explicit: list[str],
-              default_slug: str, show_all: bool = False):
+              default_slug: str, show_all: bool = False, best_id: str = "",
+              tickets: list | None = None):
     """The tickets to link: the ones named with --issue, or the ones chosen."""
     import crux.zenhub as zenhub
     import crux.zenlink as zenlink
@@ -1627,11 +1645,19 @@ def _zen_pick(cfg, hints: list[str], what: str, explicit: list[str],
     if explicit:
         chosen = []
         for ref in explicit:
+            native = zenlink.named_zh_numbers(ref)
+            if native:
+                ticket = zenhub.issue_by_number(cfg, native[0])
+                if ticket is None:
+                    print(f"⚠️  no Zenhub ticket ZH-{native[0]} in this workspace")
+                    continue
+                chosen.append(ticket)
+                continue
             slug, _, number = ref.rpartition("#")
             slug = slug or default_slug
             if not number.isdigit():
                 print(f"⚠️  {ref!r} is not an issue reference "
-                      f"(try 29, #29, or owner/repo#29)")
+                      f"(try 29, #29, owner/repo#29, or ZH-29)")
                 continue
             ticket = zenhub.issue_by_ref(cfg, slug, int(number))
             if ticket is None:
@@ -1644,11 +1670,12 @@ def _zen_pick(cfg, hints: list[str], what: str, explicit: list[str],
             chosen.append(ticket)
         return chosen
 
-    tickets = zenhub.open_issues(cfg)
+    if tickets is None:
+        tickets = zenhub.open_issues(cfg)
     if not tickets:
         print("no open Zenhub tickets in this workspace to link")
         return []
-    scored = zenlink.rank(tickets, *hints)
+    scored = zenlink.rank(tickets, *hints, best_id=best_id)
     limit = len(scored) if show_all else zenlink.PICK_LIMIT
     return zenlink.ask(cfg, scored, what, limit=limit)
 
@@ -1664,6 +1691,8 @@ def _zen_note_if_off(cfg) -> None:
     import crux.zenhub as zenhub
     if not cfg.zenhub_ask or zenhub.enabled(cfg):
         return
+    if not cfg.zenhub_workspace and not zenhub._token(cfg):
+        return  # never set up: Zenhub is optional, so say nothing at all
     post.notify_tty(f"🎫 Crux note: no Zenhub ticket linked — "
                     f"{zenhub.why_disabled(cfg)} (Optional; `[zenhub] ask = "
                     f"false` hides this note.)")
@@ -1702,6 +1731,8 @@ def _zen_ask_prepush(info, cfg, pr: int | None) -> None:
         log.info("zenhub: no terminal on this push; link with "
                  "`crux zenhub link` when you have one")
         return
+    if not zenhub.ready(cfg):
+        return  # set up, but the key or workspace does not work (logged)
     what = f"{slug}#{pr}" if pr is not None else f"{slug} ({info.branch})"
     try:
         picked = _zen_pick(cfg, [info.branch] + post._commit_subjects(info),
@@ -1712,10 +1743,11 @@ def _zen_ask_prepush(info, cfg, pr: int | None) -> None:
         log.warning("zenhub: could not offer tickets for %s (%s)",
                     info.branch, exc)
         return
-    if picked:
-        zenlink.record_pending(info, picked)
-        log.info("zenhub: holding %d ticket(s) for %s until its PR exists",
-                 len(picked), info.branch)
+    # Recorded even when empty: "none" is an answer, and the review that
+    # follows must not guess a ticket the person just turned down.
+    zenlink.record_pending(info, picked)
+    log.info("zenhub: holding %d ticket(s) for %s until its PR exists",
+             len(picked), info.branch)
 
 
 def _zen_apply_pending(cfg, info, pr: int) -> bool:
@@ -1731,11 +1763,16 @@ def _zen_apply_pending(cfg, info, pr: int) -> bool:
     log = logging.getLogger(LOG_NAME)
     try:
         picked = zenlink.consume_pending(info)
-        if not picked:
+        if picked is None:
             return False
-        if not zenhub.enabled(cfg):
+        if not picked:
+            log.info("zenhub: %s was answered \"none\" at push; linking "
+                     "nothing", info.branch)
+            return True
+        if not zenhub.ready(cfg):
             log.info("zenhub: a ticket choice was waiting for %s but Zenhub is "
-                     "no longer configured; dropping it", info.branch)
+                     "not working (%s); dropping it", info.branch,
+                     zenhub.check(cfg))
             return True
         slug = f"{info.owner}/{info.repo}"
         for problem in zenlink.attach(cfg, zenlink.pr_key(info.owner, info.repo, pr),
@@ -1751,8 +1788,110 @@ def _zen_apply_pending(cfg, info, pr: int) -> bool:
         return True
 
 
+def _zen_auto_link(cfg, info, pr: int, texts: list[str]) -> bool:
+    """Link the Zenhub tickets the branch, PR or commits name as ZH-N.
+
+    The no-terminal route in: a PR opened from an agent session or CI never
+    sees the pre-push question, but the author already said which ticket in
+    writing. Only when Zenhub is configured (workspace AND key) and nothing is
+    linked yet. True when it linked something. Never raises.
+    """
+    import crux.post as post
+    import crux.zenhub as zenhub
+    import crux.zenlink as zenlink
+    log = logging.getLogger(LOG_NAME)
+    if not zenhub.enabled(cfg):
+        return False
+    key = zenlink.pr_key(info.owner, info.repo, pr)
+    if zenlink.get(key) is not None:
+        return False
+    numbers = zenlink.named_zh_numbers(*texts)
+    if not numbers or not zenhub.ready(cfg):
+        return False
+    try:
+        picked = [t for t in (zenhub.issue_by_number(cfg, n) for n in numbers)
+                  if t is not None and not t.planning]
+        if not picked:
+            return False
+        slug = f"{info.owner}/{info.repo}"
+        for problem in zenlink.attach(cfg, key, picked, [f"{slug}#{pr}"], [(slug, pr)]):
+            log.warning("zenhub: %s", problem)
+        names = ", ".join(zenhub.describe(t) for t in picked)
+        post.notify_tty(f"🎫 Crux: {slug}#{pr} will close {names}")
+        log.info("zenhub: auto-linked %s#%d to %s", slug, pr, names)
+        return True
+    except Exception as exc:  # noqa: BLE001 — the review is already posted
+        log.warning("zenhub: could not auto-link %s#%d (%s)", info.owner, pr, exc)
+        return False
+
+
+def _zen_pr_context(info, annotation, authored: str, subjects: list[str]) -> str:
+    """What the PR is about, in the words Claude matches tickets against."""
+    lines = [f"Branch: {info.branch}"]
+    if annotation.pr_title:
+        lines.append(f"Title: {annotation.pr_title}")
+    if annotation.summary:
+        lines.append(f"Summary: {annotation.summary}")
+    if authored.strip():
+        lines.append("Author's title and description:\n" + authored.strip()[:1500])
+    if subjects:
+        lines.append("Commits:\n" + "\n".join(f"- {s}" for s in subjects[:20]))
+    return "\n".join(lines)
+
+
+def _zen_match(cfg, info, pr: int, context: str) -> tuple[bool, str, list | None]:
+    """Last resort: find the open ticket this PR implements by reading them.
+
+    Returns (linked, best_id, tickets). With a terminal and `[zenhub] ask` on,
+    nothing is linked here — the match (medium or high) goes first in the
+    picker the caller shows next, and the person decides. With no terminal,
+    only a high-confidence match is linked, and the PR note says so and how
+    to undo it. *tickets* is handed on so the picker does not fetch twice.
+
+    Skipped when `[zenhub] match = false`, when Zenhub is not working, or
+    when this PR already has a link. Never raises.
+    """
+    import crux.post as post
+    import crux.zenhub as zenhub
+    import crux.zenlink as zenlink
+    log = logging.getLogger(LOG_NAME)
+    if not cfg.zenhub_match or not zenhub.enabled(cfg):
+        return False, "", None
+    key = zenlink.pr_key(info.owner, info.repo, pr)
+    if zenlink.get(key) is not None or not zenhub.ready(cfg):
+        return False, "", None
+    try:
+        tickets = zenhub.open_issues(cfg)
+        found = zenlink.match_ticket(cfg, tickets, context)
+        if found is None or found[1] == "low":
+            log.info("zenhub: no open ticket clearly matches %s#%d",
+                     info.repo, pr)
+            return False, "", tickets
+        ticket, confidence, reason = found
+        name = zenhub.describe(ticket)
+        if post.tty_available() and cfg.zenhub_ask:
+            return False, ticket.id, tickets
+        if confidence != "high":
+            log.info("zenhub: %s might match %s#%d, but not surely enough to "
+                     "link without asking (%s)", name, info.repo, pr, reason)
+            return False, "", tickets
+        slug = f"{info.owner}/{info.repo}"
+        for problem in zenlink.attach(cfg, key, [ticket], [f"{slug}#{pr}"],
+                                      [(slug, pr)], matched=reason or "it fits best"):
+            log.warning("zenhub: %s", problem)
+        post.notify_tty(f"🎫 Crux: {slug}#{pr} will close {name} (matched by "
+                        f"reading the tickets — `crux zenhub unlink` if wrong)")
+        log.info("zenhub: matched %s#%d to %s (%s)", slug, pr, name, reason)
+        return True, ticket.id, tickets
+    except Exception as exc:  # noqa: BLE001 — the review is already posted
+        log.warning("zenhub: could not match a ticket for %s#%d (%s)",
+                    info.repo, pr, exc)
+        return False, "", None
+
+
 def _zen_offer(cfg, what: str, key: str, hints: list[str], prs: list[str],
-               note_on: list[tuple[str, int]]) -> None:
+               note_on: list[tuple[str, int]], best_id: str = "",
+               tickets: list | None = None) -> None:
     """Offer the picker after a review or a `super new`, and link what is picked.
 
     Silent and skipped unless Zenhub is configured AND `[zenhub] ask` is on AND
@@ -1760,15 +1899,19 @@ def _zen_offer(cfg, what: str, key: str, hints: list[str], prs: list[str],
     one of those is a way to have the feature without it being in the way,
     which is the whole reason it is opt-in.
     """
+    import crux.post as post
     import crux.zenhub as zenhub
     import crux.zenlink as zenlink
     if not zenhub.enabled(cfg) or not cfg.zenhub_ask:
         return
-    if zenlink.get(key) is not None:
+    if zenlink.get(key) is not None or not post.tty_available():
+        return
+    if not zenhub.ready(cfg):
         return
     try:
         default_slug = prs[0].split("#")[0] if prs else ""
-        picked = _zen_pick(cfg, hints, what, [], default_slug)
+        picked = _zen_pick(cfg, hints, what, [], default_slug,
+                           best_id=best_id, tickets=tickets)
         if not picked:
             return
         for problem in zenlink.attach(cfg, key, picked, prs, note_on):
@@ -1828,23 +1971,30 @@ def _cmd_zenhub(args: argparse.Namespace) -> int:
             if not zenhub.enabled(cfg):
                 print(f"🎫 Zenhub is off — {zenhub.why_disabled(cfg)}")
                 return 0
+            problem = zenhub.check(cfg)
+            if problem:
+                print(f"⚠️  Zenhub is set up but not working — {problem}")
+                return 1
             wid = zenhub.workspace_id(cfg)
-            print(f"🎫 Zenhub workspace {cfg.zenhub_workspace!r}"
-                  + (f" (id {wid})" if wid else " — could not be resolved"))
+            print(f"🎫 Zenhub workspace {cfg.zenhub_workspace!r} (id {wid}) — "
+                  f"key accepted")
             names = [name for _, name in zenhub.pipelines(cfg)]
             print(f"   pipelines: {', '.join(names) if names else 'none readable'}")
             done = cfg.zenhub_done_pipeline or "(none — close without moving)"
             verb = "close tickets" if cfg.zenhub_close_on_merge else "leave tickets open"
             print(f"   on merge:  {verb}, move to {done}")
             print(f"   ask after a review: {'yes' if cfg.zenhub_ask else 'no'}")
+            print(f"   match by reading tickets: "
+                  f"{'yes' if cfg.zenhub_match else 'no'}")
             links = zenlink.load()
             still_open = [k for k, v in links.items() if not v.closed]
             print(f"   links: {len(links)} ({len(still_open)} still open)")
             return 0
 
         if action == "doctor":
-            if not zenhub.enabled(cfg):
-                print(f"❌ {zenhub.why_disabled(cfg)}")
+            problem = zenhub.check(cfg)
+            if problem:
+                print(f"❌ {problem}")
                 return 1
             queries, mutations = zenhub.introspect(cfg)
             if not queries and not mutations:
@@ -1893,8 +2043,11 @@ def _cmd_zenhub(args: argparse.Namespace) -> int:
                     print(f"     lands with: {', '.join(link.prs)}")
             return 0
 
-        if not zenhub.enabled(cfg):
-            print(f"❌ {zenhub.why_disabled(cfg)}")
+        # Everything below talks to Zenhub, so the setup must actually work:
+        # a key Zenhub accepts and a workspace it can find.
+        problem = zenhub.check(cfg)
+        if problem:
+            print(f"❌ {problem}")
             return 1
 
         if action == "sync":
@@ -2023,18 +2176,28 @@ def _zen_setup(cfg) -> int:
     if not key:
         print("no key given — nothing saved")
         return 1
+    # Test the key itself before keeping it: a typo saved here would make
+    # every later Zenhub step skip, and the person would not know why.
+    problem = zenhub.key_problem(cfg, key)
+    if problem:
+        print(f"❌ {problem} — nothing saved. Check you copied the whole key.")
+        return 1
     path = credentials.save_zenhub_api_key(key)
-    print(f"✅ saved the key to {path}")
+    print(f"✅ Zenhub accepted the key; saved it to {path}")
+    env = cfg.zenhub_token_env or "ZENHUB_API_KEY"
+    if os.environ.get(env, "").strip() and os.environ[env].strip() != key:
+        print(f"⚠️  ${env} is set in this shell and Crux uses it before the "
+              f"saved key — unset it, or set it to this key")
 
     if cfg.zenhub_workspace:
-        wid = zenhub.workspace_id(cfg)
-        if wid:
-            print(f"✅ workspace {cfg.zenhub_workspace!r} resolves (id {wid})")
+        zenhub._check_cache.clear()
+        problem = zenhub.check(cfg)
+        if not problem:
+            print(f"✅ workspace {cfg.zenhub_workspace!r} found")
             print()
             print("Zenhub is on. `crux zenhub status` shows the settings.")
             return 0
-        print(f"⚠️  the key works, but workspace {cfg.zenhub_workspace!r} could "
-              f"not be resolved — check the name, or use its ID")
+        print(f"⚠️  {problem}")
         return 1
 
     print()

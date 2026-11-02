@@ -173,36 +173,48 @@ merge_method = "squash"
 port = 8787                     # 0 = no buttons in the cards at all
 
 # --- Zenhub (D40, optional) ------------------------------------------------
-# Link the Zenhub tickets a PR closes, and close them when it lands — so the
-# board keeps itself in step with what actually shipped.
+# Link the Zenhub tickets a PR closes, and close them when the PR lands, so
+# the board stays in step with what shipped.
 #
-# OFF unless `workspace` is set. While it is empty Crux makes no Zenhub calls,
-# asks no questions, and behaves exactly as it did before this feature existed.
+# OFF by default. Until you set `workspace` below AND store an API key, Crux
+# makes no Zenhub calls, asks nothing, and prints nothing about Zenhub. If you
+# set only one of the two, Crux prints a short note when it opens a PR.
 #
-# Two shapes, one behaviour. A regular PR's tickets close when THAT PR merges.
-# A super PR's tickets hang off the BUNDLE and close only once EVERY member PR
-# has landed — a cross-repo ticket is not done while half its repos are
-# unmerged. Crux picks the right one for you; `crux zenhub link` on a branch
-# that belongs to a bundle points you at the bundle.
+# Before using Zenhub, Crux checks (once per run) that the key works and the
+# workspace exists. If not, automatic steps skip quietly (see the log) and
+# commands you type tell you what to fix.
 #
-# Setup:  `crux zenhub setup`  (stores the key), then set `workspace` below.
+# A regular PR's tickets close when that PR merges. A super PR's tickets close
+# only after EVERY PR in the bundle has merged. Crux handles both for you.
+#
+# How a PR gets its ticket, in order: your answer to the push question; a
+# ticket named in the branch, PR text or commits (ZH-123 or a Zenhub link); a
+# best match picked by Claude (see `match`); the ticket picker.
+#
+# Setup:  `crux zenhub setup`  (stores the key and tests it), then set
+#         `workspace` below.
 # Check:  `crux zenhub status` and `crux zenhub doctor`.
 [zenhub]
 # The workspace, by name or by the ID in the app URL. Empty = Zenhub off.
 workspace = ""                  # e.g. "Engineering"
-# The API key is read from this env var, else from the credentials file
-# (~/.config/crux/credentials.json) — never stored here. Make one at
-# https://app.zenhub.com/settings/tokens.
+# The API key comes from this environment variable, or else from the
+# credentials file (~/.config/crux/credentials.json). It is never stored here.
+# Make one at https://app.zenhub.com/settings/tokens.
 token_env = "ZENHUB_API_KEY"
-# Close linked tickets when their PRs land. False keeps the linking (and
-# `crux zenhub sync`) while leaving the closing to a human.
+# Close linked tickets when their PRs land. False keeps linking (and
+# `crux zenhub sync`) but leaves the closing to you.
 close_on_merge = true
-# Pipeline a closed ticket is moved to. Closing alone sets the issue's state;
-# this is what moves the CARD, which boards do not always do by themselves.
-# Empty = close without moving.
+# Column a closed ticket moves to. Closing only sets the issue's state; this
+# moves the card, which boards do not always do themselves. Empty = close
+# without moving.
 done_pipeline = ""              # e.g. "Closed"
-# Offer the ticket picker on the terminal after a review, and after
-# `crux super new`. False links only when you ask by hand — for people who
-# want the closing without being asked on every push. Either way the picker's
-# default is "none": pressing enter links nothing.
+# Ask which ticket a PR closes when you push at a terminal, and after
+# `crux super new`. False means you link by hand. Pressing enter links nothing.
 ask = true
+# Last resort when no ticket was named: Claude reads the open tickets (titles
+# first, then the descriptions of the closest few) and finds the best fit for
+# the PR. At a terminal it is shown as "best match" and you choose. With no
+# terminal, Crux links it only if confident, and the PR note says how to undo
+# it (`crux zenhub unlink`). Regular PRs only. Skipped with --no-llm. Does
+# nothing unless Zenhub is set up.
+match = true

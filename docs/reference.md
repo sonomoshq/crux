@@ -520,35 +520,79 @@ review proceeds normally.
 
 ## Zenhub (optional)
 
-A ticket in Zenhub and the pull request that implements it are two records of
-one piece of work. Crux already knows when a PR lands because it is the thing
-that lands it. It can close the ticket too, keeping the board aligned with
-what actually shipped.
+A Zenhub ticket and the pull request (PR) that does the work are two records of
+one job. Crux can link them, and close the ticket when the PR lands. That keeps
+the board in step with what shipped, even across repos, where GitHub's own
+`Closes #N` does not reach.
 
-**Off unless you turn it on.** While `[zenhub] workspace` is empty, Crux makes
-no Zenhub calls and asks no questions.
+**Off by default.** Crux does nothing with Zenhub until you set a workspace
+and store an API key. Until then it makes no Zenhub calls, asks nothing, and
+prints nothing about Zenhub. If you never set it up, you never see it.
 
 ```bash
-crux zenhub setup      # stores an API key in ~/.config/crux/credentials.json
+crux zenhub setup      # asks for your API key, tests it with Zenhub, stores it
 ```
 
 Then name your workspace in `~/.config/crux/crux.toml`:
 
 ```toml
 [zenhub]
-workspace = "Engineering"       # a name, or the ID from the app URL
-done_pipeline = "Closed"     # optional: where a closed card lands
+workspace = "Engineering"    # a name, or the ID from the app URL
+done_pipeline = "Closed"     # optional: the column a closed ticket moves to
 ```
 
-Keys are made at **app.zenhub.com/settings/tokens** (Zenhub shows one once;
-copy it before closing the dialog). `crux zenhub status` shows what is
-configured; `crux zenhub doctor` checks Crux's queries against the live Zenhub
-schema, which is where to look first if something silently does nothing.
+Make a key at **app.zenhub.com/settings/tokens**. Zenhub shows it once, so copy
+it first. You can also put the key in an environment variable instead
+(`ZENHUB_API_KEY`, or the name set in `[zenhub] token_env`).
 
-### Linking
+Setup is "half done" if you have a workspace but no key, or a key but no
+workspace. Only then, when Crux opens a PR, it prints one short note saying
+what is missing.
 
-On `git push`, Crux offers a ranked list of tickets your branch is probably
-about, showing each one's number, title and description. You pick:
+### Setup check
+
+Before it does anything with Zenhub, Crux checks that the setup is real: a
+workspace is set, a key is present, Zenhub accepts the key, and the workspace
+can be found. It checks once per run.
+
+- If the check fails, steps Crux does on its own are skipped quietly. The
+  reason goes to the log (`~/.cache/crux/crux.log`).
+- If the check fails on a command you typed (`crux zenhub link`, `sync`, and so
+  on), Crux says in one sentence what is wrong and how to fix it.
+
+`crux zenhub status` shows the setup, including whether Zenhub accepts the key
+and whether the workspace was found. `crux zenhub doctor` checks Crux's
+queries against Zenhub's live schema. Run it first if something does nothing.
+
+### How a PR gets its ticket
+
+Crux tries these in order and stops at the first one that works:
+
+1. **Your answer at push time.** On `git push` at a terminal, Crux asks which
+   ticket the PR closes (see below). If you answer "none", Crux remembers and
+   will not guess a ticket for that PR.
+2. **A ticket you named.** `ZH-123` or a Zenhub link in the branch name, the PR
+   title or description, or a commit message. `ZH-N` is a ticket that lives
+   only in Zenhub, with no GitHub repo.
+3. **A best guess (last resort).** Crux reads the workspace's open tickets and
+   finds the one that fits the PR best. It reads ticket titles first. If no
+   title is a clear match, it reads the descriptions of the closest few. Claude
+   does the matching, the same headless Claude that runs your reviews. It
+   compares the PR's title, summary, branch name and commit messages to the
+   tickets.
+   - At a terminal (`crux run`), the best match goes at the top of the ticket
+     list, marked "best match". You choose. Nothing is linked without you.
+   - With no terminal (a push review, an agent, CI), Crux links the ticket
+     only if it is confident. The note it posts on the PR says the ticket was
+     matched automatically, and that `crux zenhub unlink` undoes it.
+   - Turn it off with `[zenhub] match = false`. It is also skipped with
+     `--no-llm`. It only applies to regular PRs, not super PR bundles.
+4. **Otherwise,** at a terminal, you get the usual ticket picker.
+
+### The ticket picker
+
+On `git push`, Crux shows the open tickets your branch is probably about, with
+each one's number, title and description. You pick:
 
 ```
 🎫 Zenhub: which ticket does example-org/Widget#42 close?
@@ -561,35 +605,35 @@ about, showing each one's number, title and description. You pick:
    Numbers (e.g. 1 or 1,3), or enter for none:
 ```
 
-Pressing enter links nothing, so having the feature on is never in the way.
-A branch named `fix/issue-29-…` floats its ticket to the top; the rest are
-ordered by what the branch and the ticket title have in common. Set
-`[zenhub] ask = false` to stop being offered and link by hand instead.
+Pressing enter links nothing. A branch named `fix/issue-29-…` puts its ticket
+first. The rest are ordered by how many words the branch and ticket title share.
+Set `[zenhub] ask = false` to stop being asked and link by hand instead.
 
-The question comes from the **pre-push** step, which also asks "create a PR?"
-The review itself runs detached in the background and has no terminal to ask on.
-Your answer is held and applied once the PR exists, so it works on a first push
-where the PR does not exist yet. You are asked once per branch: a branch that is
-already linked, or that answered on an earlier push, is not asked again, and a
-push with no terminal at all (CI, an IDE, an agent) is never asked and never
-pays a Zenhub round trip for it.
+The question comes from the **pre-push** step, the same one that asks "create a
+PR?". The review itself runs in the background and has no terminal to ask on, so
+Crux keeps your answer and applies it once the PR exists. That works on a first
+push, before the PR is there. You are asked once per branch. A branch that is
+already linked, or that you answered for on an earlier push, is not asked again.
+A push with no terminal at all (CI, an IDE, an agent) is never asked.
 
-Any PR can be linked later, including one Crux did not open:
+You can link any PR later, including one Crux did not open:
 
 ```bash
 crux zenhub link                      # this branch's PR, pick from a list
-crux zenhub link --pr 42 --issue 29   # no picker; link outright
+crux zenhub link --pr 42 --issue 29   # no picker; link it directly
+crux zenhub link --pr 42 --issue ZH-29  # a Zenhub-only ticket
 crux zenhub link --super 7            # a whole bundle (see below)
 crux zenhub list                      # everything Crux is holding
 crux zenhub unlink --pr 42
 ```
 
-Crux records the link, draws Zenhub's own issue↔PR connection, and leaves a
-sticky comment on the PR saying what landing it will close.
+Crux records the link, connects the ticket and PR in Zenhub, and posts a
+comment on the PR saying what landing it will close. It updates that same
+comment later instead of adding new ones.
 
 ### Regular PRs and super PRs
 
-The two shapes reach Zenhub differently, and Crux picks the right one:
+A super PR bundles several PRs. Crux handles the two kinds differently:
 
 |                | Regular PR | Super PR |
 | -------------- | ---------- | -------- |
@@ -598,29 +642,31 @@ The two shapes reach Zenhub differently, and Crux picks the right one:
 | They close when | that PR merges | **every** member PR has merged |
 | The note goes on | the PR | the brief *and* each member PR |
 
-The brief is Crux's own artifact, not a ticket, so it is never what gets
-closed. And a cross-repo ticket is not done while half its repos are unmerged,
-which is why a bundle's tickets wait for the last member rather than the first.
-`crux zenhub link` on a branch that belongs to an open bundle says so and
-points you at `--super N`, the same guard `crux merge` already has.
+The brief is Crux's own page, not a ticket, so it is never closed. A ticket that
+spans repos is not done while some of those repos are unmerged, so a bundle's
+tickets wait for the last member. If you run `crux zenhub link` on a branch
+inside an open bundle, Crux says so and points you at `--super N`. `crux merge`
+does the same.
 
 ### Closing
 
-Landing a PR through Crux (`crux merge`, `crux super merge`, or the brief's
-Merge button) closes its tickets and moves them to `done_pipeline`. Closing
-sets the ticket's state (and with it the GitHub issue behind it); the move is
-what repositions the card, which boards do not always do on their own.
+When you land a PR through Crux (`crux merge`, `crux super merge`, or the
+brief's Merge button), Crux closes its tickets and moves them to
+`done_pipeline`. Closing sets the ticket's state, and the GitHub issue behind
+it. The move is separate, because boards do not always move the card on their
+own.
 
-Crux has no webhook, so a PR merged from the GitHub UI, by a teammate, or by
-automerge is caught by a command instead:
+Crux has no webhook. A PR merged on GitHub, by a teammate, or by automerge is
+caught by a command:
 
 ```bash
-crux zenhub sync --dry-run   # say what would close
+crux zenhub sync --dry-run   # show what would close
 crux zenhub sync             # close it
 ```
 
-Safe to run as often as you like: a link closes once, an unreadable PR state is
-never read as "landed", and a ticket already closed is left alone.
+It is safe to run as often as you like. A link closes once, a PR whose state
+Crux cannot read is never treated as merged, and a ticket that is already
+closed is left alone.
 
 ## Memory
 

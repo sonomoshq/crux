@@ -70,6 +70,7 @@ _MAPPING: dict[str, dict[str, str]] = {
         "close_on_merge": "zenhub_close_on_merge",
         "done_pipeline": "zenhub_done_pipeline",
         "ask": "zenhub_ask",
+        "match": "zenhub_match",
     },
 }
 

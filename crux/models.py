@@ -647,6 +647,11 @@ class Config:
     # only when asked by hand (`crux zenhub link`) — for people who want the
     # closing without being asked on every push.
     zenhub_ask: bool = True
+    # Last resort when no ticket was picked or named: Claude reads the open
+    # tickets (titles, then the closest few descriptions) and finds the one
+    # the PR implements. At a terminal it is only put first in the picker;
+    # with no terminal it is linked only on a confident match. False = never.
+    zenhub_match: bool = True
     # D38: the loopback port `crux serve` listens on, and the port the brief's
     # action links point at. Same number in everyone's card, because 127.0.0.1
     # resolves on the machine of whoever clicks — that is the whole mechanism.

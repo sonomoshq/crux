@@ -685,16 +685,88 @@ ordered.
   the thing that lands it — so it is the natural place to retire the ticket. Cross-repo
   is where this earns its keep: GitHub's own `Closes #N` only auto-closes within one
   repo, so exactly the case super PRs exist for is the case GitHub cannot serve.
-  - **Optional, and off by default.** `[zenhub] workspace` empty (the default) means
-    `zenhub.enabled()` is False and every entry point returns immediately: no calls, no
-    prompts, no behaviour change anywhere. Both halves are required — a workspace with
-    no key cannot be reached, a key with no workspace has nothing to point at — and
-    `why_disabled()` names whichever is missing. The automatic paths make no Zenhub
-    calls when it is off, with one exception: when Crux opens a PR, it prints a single
-    note naming what is missing, so a machine that was never set up does not look like
-    one where the feature is broken. It is a note, not a warning, because Zenhub is
-    optional; it appears once per PR, not on every push, and `[zenhub] ask = false`
-    silences it.
+  - **Optional, and off by default.** With no `[zenhub] workspace` (the default),
+    `zenhub.enabled()` is False and every entry point returns at once: no calls, no
+    prompts, no output about Zenhub. Both halves are needed. A workspace with no key
+    cannot be reached, and a key with no workspace has nothing to point at.
+    `why_disabled()` names whichever is missing. The one exception is a note when Crux
+    opens a PR, and it shows only when Zenhub is HALF set up (a workspace but no key, or
+    a key but no workspace), so that setup does not look like a working one. Someone who
+    never touched Zenhub sees nothing. It is a note, not a warning, it appears once per
+    PR, and `[zenhub] ask = false` silences it.
+  - **Check the setup once before using it.** "Configured" is not "working". Before any
+    Zenhub work, Crux checks the workspace is set, the key is present, Zenhub accepts the
+    key, and the workspace can be found. The result is cached for the run. If it fails,
+    automatic steps skip quietly and write the reason to the log, because a push must
+    never fail or nag over an optional tool. Commands the user typed say in one sentence
+    what is wrong and how to fix it, because there someone is waiting for an answer.
+    `crux zenhub setup` tests the key before it says it works, and `status` reports
+    whether the key was accepted and the workspace found.
+  - **Two shapes, one store.** A regular PR is one PR in its own repo; a super PR is
+    several PRs plus a brief issue in the `[super] home` repo. The brief is Crux's own
+    artifact, not a ticket, so it is never the thing closed. Tickets therefore hang off
+    the PR in the first case and off the BUNDLE in the second, keyed
+    `pr:owner/repo#12` and `super:7` in one index. A bundle's tickets close only once
+    EVERY member has merged: a cross-repo ticket is not done while half its repos are
+    unmerged. `crux zenhub link` on a branch inside an open bundle refuses and points at
+    `--super N`, the same guard `crux merge` already carries.
+  - **Inferred, shown, confirmed. Guesses are never silent.** A PR gets its ticket by
+    the first of these that works:
+    1. The push-time answer. "None" is an answer: it is stored and stops later guessing.
+    2. A ticket named outright: `ZH-N` or a Zenhub URL in the branch, PR text or commits.
+       `ZH-N` tickets live only in Zenhub and have no GitHub repo.
+    3. A model match, last resort. Crux reads the workspace's open tickets and has the
+       headless Claude it already uses for reviews pick the best fit for the PR's title,
+       summary, branch and commit messages. Titles go first. Only if none is a clear
+       match does it read the descriptions of the closest few, which keeps the common
+       case cheap. At a terminal the best match is put at the top of the picker, marked
+       "best match", and the human chooses. With no terminal it links only when
+       confident, and the PR note says the link was automatic and that
+       `crux zenhub unlink` undoes it. It is off with `[zenhub] match = false` or
+       `--no-llm`, and it skips super PR bundles, whose tickets belong to the bundle.
+    4. Otherwise, at a terminal, the picker. Candidates are ranked by the branch name
+       (`issue-29` wins) and shared words, and each shows number, title and description.
+       Enter links nothing.
+    A wrong guess costs one line in a list already being read, or one `unlink` after an
+    automatic link. `[zenhub] ask = false` drops the picker but keeps the rest, and
+    `crux zenhub link` covers any PR at any time, including PRs Crux never opened.
+  - **Asked at pre-push even under `auto_create`.** `auto_create` answers "should there
+    be a PR?", not "may I push". A head branch the push will not create is more of a
+    problem when a PR is definitely wanted, not less, so that path asks the head
+    question too.
+  - **Two conditions, because they are decidable in different places.** At pre-push time
+    the network says nothing useful — a first push legitimately has no remote branch yet
+    — so the ask is gated on the rename signature alone: the branch tracks a remote
+    branch under a DIFFERENT name (read from `branch.<name>.remote`/`.merge`, not from
+    parsing `@{u}`, since a remote name may itself contain a slash). At create time the
+    gate is a definite 404 on the head (D34 again): a 502 or an expired token must never
+    push a branch nobody asked about.
+  - **A failed push is not rewritten.** `push_head` logs and returns False, leaving
+    `gh pr create` to fail with its own accurate error — an invented one would bury it.
+
+- **D40 — Zenhub tickets close when the work that closes them lands:** a ticket and the
+  pull request that implements it are two records of one piece of work, and keeping them
+  in step is bookkeeping nobody does reliably. Crux already knows when a PR lands — it is
+  the thing that lands it — so it is the natural place to retire the ticket. Cross-repo
+  is where this earns its keep: GitHub's own `Closes #N` only auto-closes within one
+  repo, so exactly the case super PRs exist for is the case GitHub cannot serve.
+  - **Optional, and off by default.** With no `[zenhub] workspace` (the default),
+    `zenhub.enabled()` is False and every entry point returns at once: no calls, no
+    prompts, no output about Zenhub. Both halves are needed. A workspace with no key
+    cannot be reached, and a key with no workspace has nothing to point at.
+    `why_disabled()` names whichever is missing. The one exception is a note when Crux
+    opens a PR, and it shows only when Zenhub is HALF set up (a workspace but no key, or
+    a key but no workspace), so that setup does not look like a working one. Someone who
+    never touched Zenhub sees nothing. It is a note, not a warning, it appears once per
+    PR, and `[zenhub] ask = false` silences it.
+  - **Check the setup once before using it.** "Configured" is not "working". Before any
+    Zenhub work, Crux checks the workspace is set, the key is present, Zenhub accepts the
+    key, and the workspace can be found. The result is cached for the run. If it fails,
+    automatic steps skip quietly and write the reason to the log, because a push must
+    never fail or nag over an optional tool. Commands the user typed say in one sentence
+    what is wrong and how to fix it, because there someone is waiting for an answer.
+    `crux zenhub setup` tests the key before it says it works, and `status` reports
+    whether the key was accepted and the workspace found.
   - **Two shapes, one store.** A regular PR is one PR in its own repo; a super PR is
     several PRs plus a brief issue in the `[super] home` repo. The brief is Crux's own
     artifact, not a ticket, so it is never the thing closed. Tickets therefore hang off
@@ -712,9 +784,9 @@ ordered.
     without dropping the feature, and `crux zenhub link` covers any PR at any time —
     including PRs Crux never opened.
   - **Asked at pre-push, because that is the only place a terminal exists.** The review
-    a push triggers runs DETACHED, and a detached process cannot open `/dev/tty` by name
-    — so a picker offered there would silently answer itself "none" on every push, which
-    is the whole flow. The ask therefore joins the D11 base question and the D39 head
+    a push triggers runs in the background (detached), and a detached process cannot open
+    `/dev/tty` by name. A picker offered there would answer itself "none" on every push,
+    which is the whole flow. The ask therefore joins the D11 base question and the D39 head
     question in the pre-push foreground, last of the three because it is the least
     urgent and the only one a single later command can still answer. The choice is
     RECORDED and applied by the detached run once the PR exists — on a first push it
@@ -724,7 +796,7 @@ ordered.
     choice is not — sharing it would throw the answer away in the commonest case there
     is. Same HEAD stamp and ancestor guard, so a choice stranded by a run that never
     happened cannot be applied, branch-state later, to work nobody answered for.
-  - **The terminal is probed before the network.** The gates run cheapest-first — Zenhub
+  - **The terminal is probed before the network.** The gates run cheapest-first: Zenhub
     off, ask off, already linked, a choice already waiting, no tty — so an ordinary push
     never pays a Zenhub round trip for a question that was never going to be asked, and
     a hook with no terminal (CI, an IDE, an agent) pays nothing at all.

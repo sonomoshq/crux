@@ -1024,6 +1024,17 @@ def find_comment_urls(info: RepoInfo, pr: int, markers: list[str]) -> dict:
     return urls
 
 
+def pr_text(info: RepoInfo, pr: int) -> str:
+    """The PR's current title and description, or '' when unreadable."""
+    try:
+        out = _run_gh(["api", f"repos/{info.owner}/{info.repo}/pulls/{pr}"],
+                      cwd=info.root)
+        current = json.loads(out or "{}")
+    except (PostError, ValueError):
+        return ""
+    return f"{current.get('title') or ''}\n{current.get('body') or ''}"
+
+
 def sync_pr_metadata(info: RepoInfo, pr: int, title: str | None = None,
                      summary: str = "", overview: list[str] | None = None) -> None:
     """Keep the PR title + description in step with the branch.
