@@ -129,7 +129,7 @@ Crux runs on your machine, but **it is not an offline AI model**: selected code 
 | `crux super new` | Bring related PRs into one cross-repository review |
 | `crux merge` | Review and attempt a merge with the relevant permissions |
 | `crux memory` | Manage stored repository facts |
-| `crux zenhub` | Link and sync work with Zenhub |
+| `crux zenhub` | Optional: link PRs to Zenhub tickets and close them on merge |
 | `crux install-hooks` | Install automated Git and Claude Code hooks |
 
 Prefer to stay in Claude Code? The [plugin](docs/reference.md#claude-code-plugin) provides `/crux:preview` and `/crux:run`. You can also configure [automatic reviews](docs/reference.md#hook-up-git-once-per-machine), [super PRs](docs/reference.md#super-prs-optional), [Slack](docs/reference.md#slack-notifications-optional), and [Zenhub](docs/reference.md#zenhub-optional).

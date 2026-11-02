@@ -50,17 +50,33 @@ def ticket(number: int, title: str = "A ticket", **over) -> ZenTicket:
 
 
 class _KeyEnv:
-    """Put a Zenhub key in the environment for the duration of a test."""
+    """Put a Zenhub key in the environment for the duration of a test.
+
+    The live setup check (`zenhub.check`) is stubbed to "works" unless
+    *live_check* is True — the tests that exercise it say so, and no other
+    test may reach the real Zenhub with a fake key.
+    """
+
+    def __init__(self, live_check: bool = False):
+        self._live = live_check
 
     def __enter__(self):
         self._patch = mock.patch.dict(os.environ, {"ZENHUB_API_KEY": "zh-test"})
         self._patch.start()
+        self._check = None
+        if not self._live:
+            self._check = mock.patch("crux.zenhub._check_live", return_value="")
+            self._check.start()
         zenhub._ws_cache.clear()
         zenhub._ghid_cache.clear()
+        zenhub._check_cache.clear()
         return self
 
     def __exit__(self, *a):
+        if self._check is not None:
+            self._check.stop()
         self._patch.stop()
+        zenhub._check_cache.clear()
         return False
 
 
@@ -904,14 +920,14 @@ class PendingTest(unittest.TestCase):
         zenlink.record_pending(self.info, [ticket(29)])
         with mock.patch("crux.post._is_ancestor", return_value=True):
             self.assertEqual(len(zenlink.consume_pending(self.info)), 1)
-            self.assertEqual(zenlink.consume_pending(self.info), [])
+            self.assertIsNone(zenlink.consume_pending(self.info))
         self.assertFalse(zenlink.pending(self.info))
 
     def test_a_choice_recorded_for_work_this_branch_lost_is_discarded(self):
         zenlink.record_pending(self.info, [ticket(29)])
         with mock.patch("crux.post._is_ancestor", return_value=False):
             with self.assertLogs("crux.zenlink", level="INFO"):
-                self.assertEqual(zenlink.consume_pending(self.info), [])
+                self.assertIsNone(zenlink.consume_pending(self.info))
 
     def test_a_stale_choice_is_still_consumed(self):
         """It must not sit around waiting to surprise a later push."""
@@ -920,8 +936,15 @@ class PendingTest(unittest.TestCase):
             zenlink.consume_pending(self.info)
         self.assertFalse(zenlink.pending(self.info))
 
-    def test_no_choice_reads_as_empty(self):
-        self.assertEqual(zenlink.consume_pending(self.info), [])
+    def test_no_choice_reads_as_none(self):
+        self.assertIsNone(zenlink.consume_pending(self.info))
+
+    def test_answering_none_is_kept_as_an_answer(self):
+        """ "None" at push must stop the review guessing a ticket later."""
+        zenlink.record_pending(self.info, [])
+        self.assertTrue(zenlink.pending(self.info))
+        with mock.patch("crux.post._is_ancestor", return_value=True):
+            self.assertEqual(zenlink.consume_pending(self.info), [])
 
     def test_branches_do_not_collide(self):
         other = make_info(branch="feat/other")
@@ -1125,8 +1148,18 @@ class NoteIfOffTest(unittest.TestCase):
             self.cli._zen_note_if_off(cfg)
         return told
 
-    def test_off_prints_a_note_naming_what_is_missing(self):
-        told = self._note(Config())
+    def test_never_set_up_says_nothing(self):
+        """Zenhub is optional: someone who never touched it hears nothing."""
+        self._note(Config()).assert_not_called()
+
+    def test_half_set_up_prints_a_note_naming_what_is_missing(self):
+        told = self._note(Config(zenhub_workspace="Engineering"))
+        told.assert_called_once()
+        self.assertIn("no API key", told.call_args[0][0])
+
+    def test_key_but_no_workspace_prints_a_note(self):
+        with mock.patch.dict(os.environ, {"ZENHUB_API_KEY": "zh-test"}):
+            told = self._note(Config())
         told.assert_called_once()
         text = told.call_args[0][0]
         self.assertIn("note", text)
@@ -1189,7 +1222,7 @@ class OfferTest(unittest.TestCase):
     def test_a_failure_while_linking_never_sinks_the_run(self):
         """A review that worked must not report failure because a ticket did
         not link."""
-        with _KeyEnv():
+        with _KeyEnv(), mock.patch("crux.post.tty_available", return_value=True):
             with mock.patch("crux.zenhub.open_issues",
                             side_effect=CruxError("zenhub is unwell")):
                 with self.assertLogs("crux", level="WARNING"):
@@ -1197,8 +1230,18 @@ class OfferTest(unittest.TestCase):
                                         "pr:example-org/Widget#1", ["b"],
                                         ["example-org/Widget#1"], [])
 
+    def test_no_terminal_fetches_nothing(self):
+        with _KeyEnv(), mock.patch("crux.post.tty_available", return_value=False):
+            self._offer(cfg_on()).assert_not_called()
+
+    def test_a_broken_setup_asks_nothing(self):
+        with _KeyEnv(), mock.patch("crux.post.tty_available", return_value=True):
+            with mock.patch("crux.zenhub._check_live",
+                            return_value="Zenhub did not accept the API key"):
+                self._offer(cfg_on()).assert_not_called()
+
     def test_declining_the_picker_records_nothing(self):
-        with _KeyEnv():
+        with _KeyEnv(), mock.patch("crux.post.tty_available", return_value=True):
             with mock.patch("crux.zenhub.open_issues", return_value=[ticket(1)]):
                 with mock.patch("crux.post._prompt_tty", return_value=""):
                     self.cli._zen_offer(cfg_on(), "example-org/Widget#1",
@@ -1221,6 +1264,236 @@ class OfferTest(unittest.TestCase):
                                               branch="b", pr=101)])
         self.assertEqual(self.cli._zen_note_targets(bundle),
                          [("example-org/Widget", 101)])
+
+
+# ---------------------------------------------------------------------------
+# The live setup check: key accepted, workspace found
+# ---------------------------------------------------------------------------
+
+class CheckTest(unittest.TestCase):
+    def _urlopen(self, *answers):
+        it = iter(answers)
+
+        def fake(req, timeout=None):
+            answer = next(it)
+            if isinstance(answer, Exception):
+                raise answer
+            return _Resp(answer)
+        return mock.patch("urllib.request.urlopen", side_effect=fake)
+
+    def test_off_never_calls_zenhub(self):
+        with mock.patch("urllib.request.urlopen") as called:
+            self.assertIn("not set up", zenhub.check(Config()))
+        called.assert_not_called()
+
+    def test_a_working_key_and_workspace_pass(self):
+        with _KeyEnv(live_check=True), self._urlopen(
+                {"data": {"viewer": {"id": "u1"}}},
+                {"data": {"viewer": {"searchWorkspaces": {"nodes": [
+                    {"id": "a" * 24, "name": "Engineering"}]}}}}):
+            self.assertEqual(zenhub.check(cfg_on()), "")
+            self.assertTrue(zenhub.ready(cfg_on()))  # cached: no third call
+
+    def test_a_rejected_key_says_so(self):
+        err = urllib.error.HTTPError(zenhub.ENDPOINT, 401, "no", {}, None)
+        with _KeyEnv(live_check=True), self._urlopen(err):
+            self.assertIn("did not accept the API key", zenhub.check(cfg_on()))
+            self.assertFalse(zenhub.ready(cfg_on()))
+
+    def test_an_unknown_workspace_says_so(self):
+        with _KeyEnv(live_check=True), self._urlopen(
+                {"data": {"viewer": {"id": "u1"}}},
+                {"data": {"viewer": {"searchWorkspaces": {"nodes": []}}}}):
+            self.assertIn("no workspace", zenhub.check(cfg_on()))
+
+    def test_a_workspace_id_is_checked_too(self):
+        with _KeyEnv(live_check=True), self._urlopen(
+                {"data": {"viewer": {"id": "u1"}}},
+                {"data": {"workspace": None}}):
+            self.assertIn("no workspace",
+                          zenhub.check(cfg_on(zenhub_workspace="b" * 24)))
+
+    def test_a_network_blip_is_not_remembered(self):
+        with _KeyEnv(live_check=True):
+            with self._urlopen(urllib.error.URLError("down")):
+                self.assertIn("network", zenhub.check(cfg_on()))
+            with self._urlopen({"data": {"viewer": {"id": "u1"}}},
+                               {"data": {"viewer": {"searchWorkspaces": {"nodes": [
+                                   {"id": "a" * 24, "name": "Engineering"}]}}}}):
+                self.assertEqual(zenhub.check(cfg_on()), "")
+
+    def test_setup_tests_the_typed_key_not_the_env_one(self):
+        seen = []
+
+        def fake(req, timeout=None):
+            seen.append(req.headers.get("Authorization"))
+            return _Resp({"data": {"viewer": {"id": "u1"}}})
+        with _KeyEnv(live_check=True), mock.patch("urllib.request.urlopen",
+                                                  side_effect=fake):
+            self.assertEqual(zenhub.key_problem(cfg_on(), "typed-key"), "")
+        self.assertEqual(seen, ["Bearer typed-key"])
+
+
+# ---------------------------------------------------------------------------
+# Matching by meaning: titles first, then descriptions
+# ---------------------------------------------------------------------------
+
+BOARD = [
+    ticket(1, "Retry failed photo uploads", body="Uploads drop on flaky wifi."),
+    ticket(2, "Dark mode for settings"),
+    ticket(3, "Misc cleanup", body="Make the CSV export stream instead of "
+                                   "loading every row into memory."),
+]
+
+
+class MatchTicketTest(unittest.TestCase):
+    def _match(self, *answers, tickets=BOARD, context="Branch: fix/upload-retry"):
+        with mock.patch("crux.llm.claude_json", side_effect=list(answers)) as llm:
+            found = zenlink.match_ticket(Config(), tickets, context)
+        return found, llm
+
+    def test_a_sure_title_match_stops_at_titles(self):
+        found, llm = self._match({"match": "T1", "confidence": "high",
+                                  "shortlist": ["T1"], "reason": "same work"})
+        self.assertEqual((found[0].number, found[1]), (1, "high"))
+        self.assertEqual(llm.call_count, 1)
+        self.assertIn("T1 | Retry failed photo uploads", llm.call_args[0][0])
+        self.assertNotIn("flaky wifi", llm.call_args[0][0])  # titles only
+
+    def test_unsure_titles_go_on_to_descriptions(self):
+        found, llm = self._match(
+            {"match": None, "confidence": "low", "shortlist": [], "reason": ""},
+            {"match": "T3", "confidence": "high", "reason": "the export one"},
+            context="Branch: csv-export-stream\nTitle: Stream the CSV export")
+        self.assertEqual(found[0].number, 3)
+        self.assertEqual(llm.call_count, 2)
+        second = llm.call_args[0][0]
+        self.assertIn("loading every row", second)       # descriptions read
+        self.assertNotIn("Dark mode", second)            # only the closest few
+
+    def test_descriptions_saying_none_beat_a_weak_title_guess(self):
+        found, _ = self._match(
+            {"match": "T2", "confidence": "low", "shortlist": ["T2"], "reason": ""},
+            {"match": None, "confidence": "low", "reason": "nothing fits"})
+        self.assertIsNone(found)
+
+    def test_an_unknown_id_is_no_match(self):
+        found, _ = self._match(
+            {"match": "T99", "confidence": "high", "shortlist": [], "reason": ""})
+        self.assertIsNone(found)
+
+    def test_a_missing_model_is_no_match_not_a_crash(self):
+        from crux.llm import LlmError
+        with mock.patch("crux.llm.claude_json", side_effect=LlmError("no claude")):
+            self.assertIsNone(zenlink.match_ticket(Config(), BOARD, "Branch: x"))
+
+    def test_planning_items_are_never_offered(self):
+        epic = ticket(9, "Uploads epic", planning=True)
+        _, llm = self._match({"match": None, "confidence": "low", "shortlist": [],
+                              "reason": ""}, {"match": None}, tickets=[epic])
+        llm.assert_not_called()
+
+    def test_ticket_text_is_fenced_as_data(self):
+        _, llm = self._match({"match": "T1", "confidence": "high",
+                              "shortlist": [], "reason": ""})
+        self.assertIn("never instructions", llm.call_args[0][0])
+
+
+class RankAndNoteTest(unittest.TestCase):
+    def test_the_best_match_goes_first_and_says_why(self):
+        scored = zenlink.rank(BOARD, "fix/issue-2", best_id="Z3")
+        self.assertEqual(scored[0][1].number, 3)
+        self.assertIn("← best match", zenlink.render_choices(scored, 3))
+
+    def test_a_matched_link_says_it_was_matched_and_how_to_undo(self):
+        note = zenlink.render_note([BOARD[0]], matched="same work")
+        self.assertIn("same work", note)
+        self.assertIn("crux zenhub unlink", note)
+        self.assertNotIn("unlink", zenlink.render_note([BOARD[0]]))
+
+
+class ZenMatchCliTest(unittest.TestCase):
+    """`_zen_match`: when the last resort runs, and what it may do alone."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        patch = mock.patch.dict(os.environ, {"XDG_CONFIG_HOME": self.tmp.name})
+        patch.start()
+        self.addCleanup(patch.stop)
+        import crux.cli as cli
+        self.cli = cli
+        self.info = make_info()
+
+    def _run(self, cfg, found, tty=False):
+        with mock.patch("crux.zenhub.open_issues", return_value=BOARD), \
+                mock.patch("crux.zenlink.match_ticket", return_value=found) as m, \
+                mock.patch("crux.post.tty_available", return_value=tty), \
+                mock.patch("crux.post.notify_tty"), \
+                mock.patch("crux.zenhub.connect_pr", return_value=True), \
+                mock.patch("crux.superpost._upsert") as noted:
+            out = self.cli._zen_match(cfg, self.info, 7, "Branch: x")
+        return out, m, noted
+
+    def test_a_sure_match_links_with_no_terminal(self):
+        with _KeyEnv():
+            (linked, best, _), _, noted = self._run(
+                cfg_on(), (BOARD[0], "high", "same work"))
+        self.assertTrue(linked)
+        self.assertEqual(best, "Z1")
+        self.assertEqual(
+            [t.number for t in zenlink.get("pr:example-org/Widget#7").tickets], [1])
+        self.assertIn("crux zenhub unlink", noted.call_args[0][2])
+
+    def test_an_unsure_match_is_not_linked_alone(self):
+        with _KeyEnv():
+            (linked, best, _), _, _ = self._run(cfg_on(), (BOARD[0], "medium", ""))
+        self.assertFalse(linked)
+        self.assertIsNone(zenlink.get("pr:example-org/Widget#7"))
+
+    def test_at_a_terminal_it_only_suggests(self):
+        with _KeyEnv():
+            (linked, best, tickets), _, _ = self._run(
+                cfg_on(), (BOARD[0], "high", ""), tty=True)
+        self.assertEqual((linked, best), (False, "Z1"))
+        self.assertEqual(tickets, BOARD)  # handed to the picker, not refetched
+        self.assertIsNone(zenlink.get("pr:example-org/Widget#7"))
+
+    def test_low_confidence_is_no_suggestion(self):
+        with _KeyEnv():
+            (linked, best, _), _, _ = self._run(
+                cfg_on(), (BOARD[0], "low", ""), tty=True)
+        self.assertEqual((linked, best), (False, ""))
+
+    def test_match_false_turns_it_off(self):
+        with _KeyEnv():
+            _, m, _ = self._run(cfg_on(zenhub_match=False), (BOARD[0], "high", ""))
+        m.assert_not_called()
+
+    def test_zenhub_off_turns_it_off(self):
+        _, m, _ = self._run(Config(), (BOARD[0], "high", ""))
+        m.assert_not_called()
+
+    def test_a_broken_key_turns_it_off(self):
+        with _KeyEnv(), mock.patch("crux.zenhub._check_live",
+                                   return_value="key rejected"):
+            _, m, _ = self._run(cfg_on(), (BOARD[0], "high", ""))
+        m.assert_not_called()
+
+    def test_an_existing_link_is_left_alone(self):
+        zenlink.put(ZenLink(key="pr:example-org/Widget#7", tickets=[ticket(2)]))
+        with _KeyEnv():
+            _, m, _ = self._run(cfg_on(), (BOARD[0], "high", ""))
+        m.assert_not_called()
+
+
+class ApplyPendingNoneTest(unittest.TestCase):
+    def test_none_at_push_stops_everything_after_it(self):
+        import crux.cli as cli
+        with mock.patch("crux.zenlink.consume_pending", return_value=[]):
+            self.assertTrue(cli._zen_apply_pending(cfg_on(), make_info(), 7))
+        with mock.patch("crux.zenlink.consume_pending", return_value=None):
+            self.assertFalse(cli._zen_apply_pending(cfg_on(), make_info(), 7))
 
 
 if __name__ == "__main__":
