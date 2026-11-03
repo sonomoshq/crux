@@ -285,6 +285,52 @@ def named_zh_numbers(*texts: str) -> list[int]:
     return found
 
 
+# GitHub issue references a PR author writes on purpose: `owner/repo#N`,
+# `repo#N`, `#N`, `GH-N`, `issue-N`. Each is only a candidate — the auto-link
+# keeps it only if Zenhub knows it as an open, non-planning issue (a `#N` that
+# is a PR is refused by `zenhub.issue_by_ref`).
+_GH_REF_RE = re.compile(
+    r"(?:(?<![\w./-])(?:(?P<owner>[\w.-]+)/)?(?P<repo>[\w.-]+))?"
+    r"(?:#|\bgh-|\bissues?[-_/])(?P<num>\d{1,6})\b", re.IGNORECASE)
+# A branch segment that starts with the issue number: `fix/318-thing`.
+_BRANCH_NUM_RE = re.compile(r"^(\d{1,6})[-_]")
+# At most this many lookups per PR: a commit list full of `#N` mentions must
+# not turn one review into dozens of Zenhub calls.
+GH_REF_LIMIT = 5
+
+
+def named_gh_refs(slug: str, branch: str, *texts: str,
+                  exclude: int = 0) -> list[tuple[str, int]]:
+    """GitHub issues the branch, PR or commits name, as (owner/repo, N), in
+    order of first mention. *slug* is the PR's own repo — where a bare `#N`
+    and a branch number point; `repo#N` keeps the PR's owner. *exclude* is
+    the PR's own number. ZH-N is `named_zh_numbers`' business, not this."""
+    owner = slug.split("/", 1)[0]
+    found: list[tuple[str, int]] = []
+
+    def add(ref: tuple[str, int]) -> None:
+        if ref[1] != exclude and ref not in found:
+            found.append(ref)
+
+    for segment in (branch or "").split("/"):
+        lead = _BRANCH_NUM_RE.match(segment)
+        if lead:
+            add((slug, int(lead.group(1))))
+    for text in texts:
+        for m in _GH_REF_RE.finditer(text or ""):
+            if _ZH_NAMED_RE.match(m.group(0).lstrip()) or (
+                    (m.group("repo") or "").lower() == "zh"):
+                continue
+            repo = m.group("repo")
+            if m.group("owner"):
+                add((f"{m.group('owner')}/{repo}", int(m.group("num"))))
+            elif repo and m.group(0)[len(repo)] == "#":
+                add((f"{owner}/{repo}", int(m.group("num"))))
+            else:
+                add((slug, int(m.group("num"))))
+    return found[:GH_REF_LIMIT]
+
+
 def _words(text: str) -> set[str]:
     return {w for w in re.split(r"[^0-9A-Za-z]+", (text or "").lower())
             if len(w) > 2 and w not in _STOP}

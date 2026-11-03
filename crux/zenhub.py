@@ -502,8 +502,12 @@ def repo_ghid(slug: str) -> int:
     return value
 
 
-def issue_by_ref(cfg: Config, slug: str, number: int) -> ZenTicket | None:
-    """Resolve `owner/repo#N` to a Zenhub ticket, for an explicit --issue."""
+def issue_by_ref(cfg: Config, slug: str, number: int,
+                 open_only: bool = False) -> ZenTicket | None:
+    """Resolve `owner/repo#N` to a Zenhub ticket, for an explicit --issue.
+
+    *open_only* (the auto-link) also refuses a closed issue: a mention of one
+    in a PR body is history, not the ticket the PR closes."""
     ghid = repo_ghid(slug)
     if not ghid:
         return None
@@ -515,6 +519,9 @@ def issue_by_ref(cfg: Config, slug: str, number: int) -> ZenTicket | None:
         return None
     if node.get("pullRequest"):
         log.warning("zenhub: %s#%d is a pull request, not a ticket", slug, number)
+        return None
+    if open_only and str(node.get("state") or "").upper() == "CLOSED":
+        log.info("zenhub: %s#%d is closed; not linking it", slug, number)
         return None
     return _ticket(node)
 

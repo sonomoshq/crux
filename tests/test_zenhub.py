@@ -378,6 +378,28 @@ class NamedZhTest(unittest.TestCase):
         self.assertEqual(zenlink.named_zh_numbers("bazh-3", "zhone 4"), [])
 
 
+class NamedGhRefsTest(unittest.TestCase):
+    SLUG = "example-org/Widget"
+
+    def test_every_written_form_resolves_to_a_repo(self):
+        self.assertEqual(zenlink.named_gh_refs(
+            self.SLUG, "fix/318-no-sg",
+            "fix(run): thing (#318)",
+            "Closes #318. See Gadget#138, other-org/Thing#9, GH-7 and issue-8"),
+            [(self.SLUG, 318), ("example-org/Gadget", 138),
+             ("other-org/Thing", 9), (self.SLUG, 7), (self.SLUG, 8)])
+
+    def test_the_prs_own_number_and_zh_refs_are_skipped(self):
+        self.assertEqual(zenlink.named_gh_refs(
+            self.SLUG, "feat/x", "Merge pull request #42", "ZH-12 zh#13",
+            exclude=42), [])
+
+    def test_lookups_are_bounded(self):
+        many = " ".join(f"#{n}" for n in range(1, 30))
+        self.assertEqual(len(zenlink.named_gh_refs(self.SLUG, "", many)),
+                         zenlink.GH_REF_LIMIT)
+
+
 # ---------------------------------------------------------------------------
 # Closing
 # ---------------------------------------------------------------------------
@@ -1123,9 +1145,37 @@ class AutoLinkTest(unittest.TestCase):
     def test_nothing_named_falls_through_to_the_picker(self):
         with _KeyEnv():
             with mock.patch("crux.zenhub.issue_by_number") as looked:
-                self.assertFalse(self.cli._zen_auto_link(
-                    cfg_on(), self.info, 42, ["fix/signout", "#341"]))
+                with mock.patch("crux.zenhub.issue_by_ref") as by_ref:
+                    self.assertFalse(self.cli._zen_auto_link(
+                        cfg_on(), self.info, 42, ["fix/signout", "a plain PR"]))
         looked.assert_not_called()
+        by_ref.assert_not_called()
+
+    def test_a_github_issue_named_in_the_pr_is_linked_without_asking(self):
+        with _KeyEnv():
+            with mock.patch("crux.zenhub.ready", return_value=True):
+                with mock.patch("crux.zenhub.issue_by_ref",
+                                return_value=ticket(318, "sg fallback")) as by_ref:
+                    with mock.patch("crux.zenhub.connect_pr", return_value=True):
+                        with mock.patch("crux.superpost._upsert"):
+                            with mock.patch("crux.post.notify_tty"):
+                                linked = self.cli._zen_auto_link(
+                                    cfg_on(), self.info, 42,
+                                    ["fix/318-no-sg", "Closes #318", "fix (#318)"])
+        self.assertTrue(linked)
+        by_ref.assert_called_once_with(mock.ANY, "example-org/Widget", 318,
+                                       open_only=True)
+        link = zenlink.get("pr:example-org/Widget#42")
+        self.assertEqual([t.number for t in link.tickets], [318])
+
+    def test_a_ref_zenhub_does_not_know_links_nothing(self):
+        # `#341` may be a PR, a closed issue, or nothing Zenhub tracks.
+        with _KeyEnv():
+            with mock.patch("crux.zenhub.ready", return_value=True):
+                with mock.patch("crux.zenhub.issue_by_ref", return_value=None):
+                    self.assertFalse(self.cli._zen_auto_link(
+                        cfg_on(), self.info, 42, ["fix/signout", "see #341"]))
+        self.assertIsNone(zenlink.get("pr:example-org/Widget#42"))
 
 
 class NoteIfOffTest(unittest.TestCase):
