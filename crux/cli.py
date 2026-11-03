@@ -1789,12 +1789,17 @@ def _zen_apply_pending(cfg, info, pr: int) -> bool:
 
 
 def _zen_auto_link(cfg, info, pr: int, texts: list[str]) -> bool:
-    """Link the Zenhub tickets the branch, PR or commits name as ZH-N.
+    """Link the Zenhub tickets the branch, PR or commits name.
 
     The no-terminal route in: a PR opened from an agent session or CI never
     sees the pre-push question, but the author already said which ticket in
-    writing. Only when Zenhub is configured (workspace AND key) and nothing is
-    linked yet. True when it linked something. Never raises.
+    writing — as ZH-N, or as a GitHub issue (`#318`, `Locke#318`,
+    `owner/repo#318`, `GH-318`, `issue-318`, a branch like `fix/318-…`). A
+    GitHub ref links only if Zenhub knows it as an open issue that is not a
+    PR or an epic, so a stray `#N` costs a lookup, never a wrong link. Only
+    when Zenhub is configured (workspace AND key) and nothing is linked yet.
+    *texts* starts with the branch name. True when it linked something.
+    Never raises.
     """
     import crux.post as post
     import crux.zenhub as zenhub
@@ -1805,15 +1810,21 @@ def _zen_auto_link(cfg, info, pr: int, texts: list[str]) -> bool:
     key = zenlink.pr_key(info.owner, info.repo, pr)
     if zenlink.get(key) is not None:
         return False
+    slug = f"{info.owner}/{info.repo}"
     numbers = zenlink.named_zh_numbers(*texts)
-    if not numbers or not zenhub.ready(cfg):
+    refs = zenlink.named_gh_refs(slug, texts[0] if texts else "", *texts[1:],
+                                 exclude=pr)
+    if not (numbers or refs) or not zenhub.ready(cfg):
         return False
     try:
-        picked = [t for t in (zenhub.issue_by_number(cfg, n) for n in numbers)
-                  if t is not None and not t.planning]
+        found = [zenhub.issue_by_number(cfg, n) for n in numbers]
+        found += [zenhub.issue_by_ref(cfg, s, n, open_only=True) for s, n in refs]
+        picked: list = []
+        for t in found:
+            if t is not None and not t.planning and t.id not in {p.id for p in picked}:
+                picked.append(t)
         if not picked:
             return False
-        slug = f"{info.owner}/{info.repo}"
         for problem in zenlink.attach(cfg, key, picked, [f"{slug}#{pr}"], [(slug, pr)]):
             log.warning("zenhub: %s", problem)
         names = ", ".join(zenhub.describe(t) for t in picked)
