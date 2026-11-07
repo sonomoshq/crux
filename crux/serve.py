@@ -367,7 +367,14 @@ class Handler(http.server.BaseHTTPRequestHandler):
         # replays it later.
         self.send_header("Cache-Control", "no-store")
         self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError):
+            # The browser gave up first (tab closed, reload, double click
+            # while a slow page — hydrate() shells out to gh — was building).
+            # Nothing to deliver to; don't dump a traceback for it.
+            log.info("%s - client went away before the page was sent",
+                     self.address_string())
 
     def _bundle(self, number: int) -> Bundle | None:
         """This machine's bundle, or the one rebuilt from its brief (D38).
