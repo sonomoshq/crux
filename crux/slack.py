@@ -19,6 +19,8 @@ returns None / does nothing — Slack must never block or fail a review.
 """
 from __future__ import annotations
 
+import contextlib
+import fcntl
 import json
 import logging
 import os
@@ -265,6 +267,61 @@ def announce_pr(cfg: Config, info: RepoInfo, pr: int, title: str, url: str,
     repo_link = (f"<https://github.com/{info.owner}/{info.repo}"
                  f"|{info.owner}/{info.repo}>")
 
+    # Several crux runs fire for one push/PR-create (git hook, Claude hook,
+    # manual `crux run`). Without a lock they all scan the channel, see no
+    # link, and each post a new root message. Serialize per PR, and let a run
+    # for a head this machine already announced reuse that post silently.
+    with _announce_lock(info, pr) as marker:
+        prev = marker.read()
+        if prev.get("head") == info.head_sha and prev.get("ts"):
+            return prev.get("channel", channel_id), prev["ts"]
+        channel, ts = _announce_unlocked(token, channel_id, info, pr, title,
+                                         url, repo_link, previous_ts, author)
+        if ts:
+            marker.write({"channel": channel, "ts": ts, "head": info.head_sha})
+        return channel, ts
+
+
+class _Marker:
+    def __init__(self, path):
+        self.path = path
+
+    def read(self) -> dict:
+        try:
+            with open(self.path) as f:
+                return json.load(f)
+        except (OSError, ValueError):
+            return {}
+
+    def write(self, data: dict) -> None:
+        with contextlib.suppress(OSError):
+            with open(self.path, "w") as f:
+                json.dump(data, f)
+
+
+@contextlib.contextmanager
+def _announce_lock(info: RepoInfo, pr: int):
+    """Exclusive per-PR flock around check-then-post. Yields the PR's local
+    announce marker. Falls back to running unlocked if the lock file is
+    unusable: a rare duplicate beats a dropped announcement."""
+    d = os.path.join(os.path.expanduser("~/.cache/crux"), "slack-announce")
+    base = os.path.join(d, f"{info.owner}-{info.repo}-{pr}")
+    fd = None
+    try:
+        os.makedirs(d, exist_ok=True)
+        fd = os.open(base + ".lock", os.O_CREAT | os.O_RDWR, 0o600)
+        fcntl.flock(fd, fcntl.LOCK_EX)
+    except OSError:
+        log.warning("slack announce lock unavailable for PR #%d", pr)
+    try:
+        yield _Marker(base + ".json")
+    finally:
+        if fd is not None:
+            os.close(fd)
+
+
+def _announce_unlocked(token, channel_id, info, pr, title, url, repo_link,
+                       previous_ts, author) -> tuple[str, str]:
     root_ts = _find_pr_message_ts(token, channel_id, url) or previous_ts
     if root_ts:
         _call("chat.postMessage", token, payload={
