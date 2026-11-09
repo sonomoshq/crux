@@ -6,12 +6,28 @@ from __future__ import annotations
 
 import json
 import os
+import tempfile
 import unittest
 import urllib.parse
 from unittest import mock
 
 from crux import slack
 from crux.models import Config, RepoInfo
+
+
+_HOME = None
+
+
+def setUpModule():
+    # announce_pr keeps a per-PR marker under ~/.cache/crux; keep it hermetic.
+    global _HOME
+    import tempfile
+    _HOME = mock.patch.dict(os.environ, {"HOME": tempfile.mkdtemp()})
+    _HOME.start()
+
+
+def tearDownModule():
+    _HOME.stop()
 
 
 def make_info() -> RepoInfo:
@@ -71,13 +87,14 @@ class AnnounceTest(unittest.TestCase):
     URL = "https://github.com/o/r/pull/7"
 
     def setUp(self):
-        self._env = mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test"})
+        self._env = mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test",
+                                                     "HOME": tempfile.mkdtemp()})
         self._env.start()
         self.addCleanup(self._env.stop)
         self.calls: list[tuple[str, dict | None]] = []
 
     def _run(self, history_messages, channel="C0123456", previous_ts="",
-             author=""):
+             author="", head="h" * 40):
         def fake_urlopen(req, timeout=None):
             payload = json.loads(req.data) if req.data else None
             self.calls.append((req.full_url, payload))
@@ -92,7 +109,9 @@ class AnnounceTest(unittest.TestCase):
 
         cfg = Config(slack_channel=channel)
         with mock.patch("crux.slack.urllib.request.urlopen", side_effect=fake_urlopen):
-            return slack.announce_pr(cfg, make_info(), 7, "My PR", self.URL,
+            info = make_info()
+            info.head_sha = head
+            return slack.announce_pr(cfg, info, 7, "My PR", self.URL,
                                      previous_ts, author=author)
 
     def _post_payload(self) -> dict:
@@ -153,7 +172,8 @@ class AnnounceTest(unittest.TestCase):
         self._run([{"text": "unrelated", "ts": "1.0"}])
         first = self._post_payload()["text"]
         self.calls.clear()
-        self._run([{"text": f"here it is <{self.URL}|#7>", "ts": "999.000"}])
+        self._run([{"text": f"here it is <{self.URL}|#7>", "ts": "999.000"}],
+                  head="n" * 40)  # a new push: same head would dedupe
         reply = self._post_payload()["text"]
         self.assertIn("New commits pushed", reply)
         for text in (first, reply):
@@ -176,7 +196,8 @@ class ErrorDiagnosticsTest(unittest.TestCase):
     a missing channels:read scope was invisible without these)."""
 
     def setUp(self):
-        self._env = mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test"})
+        self._env = mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test",
+                                                     "HOME": tempfile.mkdtemp()})
         self._env.start()
         self.addCleanup(self._env.stop)
 
@@ -270,3 +291,61 @@ class ErrorDiagnosticsTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AnnounceRaceTest(unittest.TestCase):
+    """Several crux runs fire for one PR (pre-push detached run, Claude hook,
+    manual `crux run`). They must yield ONE root announcement."""
+    URL = "https://github.com/o/r/pull/9"
+
+    def setUp(self):
+        import tempfile
+        env = mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-test",
+                                           "HOME": tempfile.mkdtemp()})
+        env.start()
+        self.addCleanup(env.stop)
+        self.posts: list[dict] = []
+        self.posted_urls: list[str] = []
+
+    def _fake(self, req, timeout=None):
+        import time
+        payload = json.loads(req.data) if req.data else None
+        if "conversations.history" in req.full_url:
+            time.sleep(0.05)  # widen the check-then-post window
+            msgs = [{"ts": "1.0", "text": f"<{u}|x>"} for u in self.posted_urls]
+            return _Resp({"ok": True, "messages": msgs})
+        if "conversations.list" in req.full_url:
+            return _Resp({"ok": True,
+                          "channels": [{"name": "pull-requests", "id": "C777"}]})
+        if "chat.postMessage" in req.full_url:
+            self.posts.append(payload)
+            if "thread_ts" not in payload:
+                self.posted_urls.append(self.URL)
+            return _Resp({"ok": True, "ts": "1.0"})
+        return _Resp({"ok": True})
+
+    def test_concurrent_runs_post_one_root_and_no_thread_noise(self):
+        import threading
+        cfg = Config(slack_channel="pull-requests")
+        with mock.patch("crux.slack.urllib.request.urlopen", side_effect=self._fake):
+            ts: list = []
+            threads = [threading.Thread(target=lambda: ts.append(
+                slack.announce_pr(cfg, make_info(), 9, "t", self.URL)))
+                for _ in range(3)]
+            for t in threads:
+                t.start()
+            for t in threads:
+                t.join()
+        self.assertEqual(len(self.posts), 1, self.posts)
+        self.assertNotIn("thread_ts", self.posts[0])
+        self.assertEqual({r[1] for r in ts}, {"1.0"})
+
+    def test_new_head_threads_an_update(self):
+        cfg = Config(slack_channel="pull-requests")
+        with mock.patch("crux.slack.urllib.request.urlopen", side_effect=self._fake):
+            slack.announce_pr(cfg, make_info(), 9, "t", self.URL)
+            info2 = make_info()
+            info2.head_sha = "z" * 40
+            slack.announce_pr(cfg, info2, 9, "t", self.URL)
+        self.assertEqual(len(self.posts), 2)
+        self.assertEqual(self.posts[1].get("thread_ts"), "1.0")
