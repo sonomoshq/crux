@@ -3457,7 +3457,8 @@ class TestCombinedCheckout(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             path, members = self._world(tmp)
             got = self._run(path, members)
-            self.assertEqual([g.state for g in got], ["ready", "ready"], got[0].detail)
+            self.assertEqual([g.state for g in got], ["ready"], got[0].detail)
+            self.assertIn("#1, #2", got[0].detail)
             self.assertEqual(git(["rev-parse", "--abbrev-ref", "HEAD"], path), "super/7")
             self.assertTrue((Path(path) / "feat-a.txt").exists())
             self.assertTrue((Path(path) / "feat-b.txt").exists())
@@ -3508,8 +3509,19 @@ class TestCombinedCheckout(unittest.TestCase):
                    BundleMember(owner="o", repo="A", branch="y", pr=2, base="release")]
         with mock.patch.object(superact, "_git", side_effect=AssertionError("no git")):
             got = superact._checkout_combined(7, members, "/clones/A", cfg=Config())
-        self.assertEqual([g.state for g in got], ["failed", "failed"])
+        self.assertEqual([g.state for g in got], ["failed"])
         self.assertIn("#1 → main, #2 → release", got[0].detail)
+
+    def test_a_stacked_pr_is_merged_after_the_pr_it_sits_on(self) -> None:
+        # #2 targets #1's branch, not main: that is a stack, not a second base.
+        with tempfile.TemporaryDirectory() as tmp:
+            path, (a, b) = self._world(tmp)
+            b.base = "feat-a"
+            got = self._run(path, [b, a])
+            self.assertEqual([g.state for g in got], ["ready"], got[0].detail)
+            self.assertIn("main + #1, #2", got[0].detail)
+            self.assertTrue((Path(path) / "feat-a.txt").exists())
+            self.assertTrue((Path(path) / "feat-b.txt").exists())
 
     def test_uncommitted_work_is_never_touched(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -3531,8 +3543,8 @@ class TestCombinedCheckout(unittest.TestCase):
                                return_value=superact.Checkout(slug="o/B", branch="feat",
                                                               state="ready")) as one, \
              mock.patch.object(superact, "_checkout_combined",
-                               return_value=[superact.Checkout(slug="o/A", branch="super/7", state="ready")] * 2) as combined:
+                               return_value=[superact.Checkout(slug="o/A", branch="super/7", state="ready")]) as combined:
             got = superact.checkout(bundle, Config())
         self.assertEqual(one.call_count, 1)
         self.assertEqual([m.pr for m in combined.call_args.args[1]], [1, 2])
-        self.assertEqual(len(got), 3)
+        self.assertEqual(len(got), 2)   # one row per repo, not per PR

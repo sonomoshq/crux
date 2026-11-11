@@ -1555,7 +1555,7 @@ def _cmd_super(args: argparse.Namespace) -> int:
                       f"it in {cfg.super_home or '[super] home (unset)'}")
                 return 1
             import crux.superact as superact
-            print(f"⏳ Putting {len(found.members)} repos on their branches…\n")
+            print(f"⏳ Putting {len({(m.owner, m.repo) for m in found.members})} repos on their branches…\n")
             results = superact.checkout(found, cfg, repo_root=root)
             for item in results:
                 print(f"  {item.mark} {item.slug} — {item.detail}")

@@ -33,6 +33,7 @@ import os
 from dataclasses import dataclass
 
 import crux.bundle as bundle_store
+import crux.cargopatch as cargopatch
 import crux.post as post
 import crux.superpost as superpost
 import crux.superpr as superpr
@@ -545,11 +546,32 @@ def checkout(bundle: Bundle, cfg: Config,
         done.add(key)
         group = by_repo[key]
         path = paths.get(f"{member.owner}/{member.repo}", "")
+        if path:
+            # Last press's local cargo patch (and the Cargo.lock its build
+            # rewrote) would read as uncommitted work and block this one.
+            cargopatch.drop(path)
         if len(group) == 1:
             results.append(_checkout_one(member, path, root))
         else:
-            results.extend(_checkout_combined(bundle.number, group, path, root, cfg))
+            results.extend(_checkout_combined(bundle.number, group, path, root, cfg,
+                                              bundle=set(by_repo)))
+    _patch_siblings(bundle.number, results)
     return results
+
+
+def _patch_siblings(number: int, results: list[Checkout]) -> None:
+    """Point each ready Rust repo's git deps on other bundle repos at their
+    local checkouts, so the bundle builds as one tree instead of the pinned revs."""
+    ready = {r.slug.lower(): r.path for r in results if r.state == "ready" and r.path}
+    for r in results:
+        if r.state != "ready" or not r.path:
+            continue
+        try:
+            note = cargopatch.apply(r.path, ready, number)
+        except (OSError, RuntimeError) as exc:
+            note = f"could not write its local cargo patch ({exc})"
+        if note:
+            r.detail += f"; {note}"
 
 
 def combined_branch(number: int) -> str:
@@ -557,8 +579,23 @@ def combined_branch(number: int) -> str:
     return f"super/{number}"
 
 
+def _stack_order(members: list[BundleMember], base: str) -> list[BundleMember]:
+    """Members on `base` first, then each stacked PR after the one it sits on."""
+    by_head = {m.branch: m for m in members}
+
+    def depth(m: BundleMember) -> int:
+        n, seen = 0, set()
+        while m.base != base and m.base in by_head and m.branch not in seen:
+            seen.add(m.branch)
+            m, n = by_head[m.base], n + 1
+        return n
+
+    return sorted(members, key=depth)
+
+
 def _checkout_combined(number: int, members: list[BundleMember], path: str,
-                       root: str = "", cfg: Config | None = None) -> list[Checkout]:
+                       root: str = "", cfg: Config | None = None,
+                       bundle: set[str] | None = None) -> list[Checkout]:
     """Set up ONE repo that has several member PRs: a local `super/<n>` branch
     off their shared base, with every member branch merged into it.
 
@@ -568,16 +605,21 @@ def _checkout_combined(number: int, members: list[BundleMember], path: str,
 
     * every member must share one base branch — PRs aimed at different bases
       do not describe one tree, and guessing which base wins would hand the
-      tester code nobody proposed. That is refused, naming each PR's base;
+      tester code nobody proposed. That is refused, naming each PR's base.
+      A stacked PR (based on another member's branch) is not a different
+      base: it sits on that member, so it is merged after it;
     * the branch is Crux's own (`super/<n>`, reset on every press), built from
       `origin/<base>` — no member branch is rewritten;
-    * a conflict between two members is handed to Claude to resolve
+    * a conflict that is only a git rev pin to another bundle repo (and
+      `Cargo.lock`) takes either side: the local cargo patch `checkout` writes
+      builds that repo's checkout, not the pin, so the pin no longer matters;
+    * any other conflict between two members is handed to Claude to resolve
       (`_resolve_conflicts`); Crux checks no conflict is left and commits it,
       and the result says which PRs were resolved that way. A conflict Claude
       cannot resolve aborts the merge, puts the repo back on the branch it was
       on, and names the PR that conflicted.
 
-    Returns one result per member, all with the same outcome.
+    Returns one result for the repo, naming every member PR.
     """
     slug = f"{members[0].owner}/{members[0].repo}"
     branch = combined_branch(number)
@@ -585,15 +627,18 @@ def _checkout_combined(number: int, members: list[BundleMember], path: str,
 
     def each(state: str, detail: str, path: str = path, was: str = "") -> list[Checkout]:
         return [Checkout(slug=slug, branch=branch, path=path, was=was,
-                         state=state, detail=detail) for _ in members]
+                         state=state, detail=detail)]
 
-    bases = {m.base for m in members}
-    if len(bases) > 1:
+    heads = {m.branch for m in members}
+    bases = {m.base for m in members if m.base not in heads}
+    if len(bases) != 1:
         named = ", ".join(f"#{m.pr} → {m.base}" for m in members)
         return each("failed", f"its PRs target different base branches ({named}); "
                               f"they cannot be set up as one tree — retarget them "
                               f"to one base, then press again")
-    base = members[0].base
+    base = bases.pop()
+    members = _stack_order(members, base)
+    prs = ", ".join(f"#{m.pr}" for m in members)
 
     if not path and root:
         path, error = _clone_missing(slug, root)
@@ -621,6 +666,7 @@ def _checkout_combined(number: int, members: list[BundleMember], path: str,
                     path, was)
     ident = ["-c", "user.name=crux", "-c", "user.email=crux@localhost"]
     resolved: list[str] = []
+    pinned: list[str] = []
     merged: list[BundleMember] = []
     for m in members:
         message = f"super/{number}: merge #{m.pr} ({m.branch})"
@@ -632,7 +678,17 @@ def _checkout_combined(number: int, members: list[BundleMember], path: str,
             # repo for one feature touch the same files. Claude resolves them;
             # Crux checks the result and commits it. Anything else, or a
             # resolution that does not hold, rolls the repo back.
-            note = _resolve_conflicts(path, m, merged, base, cfg, branch)
+            pins: list[str] = []
+            try:
+                pins = cargopatch.take_pin_side(path, bundle or set())
+                left = _git(["diff", "--name-only", "--diff-filter=U"], path).strip()
+            except (CruxError, RuntimeError, OSError):
+                left = "?"
+            if pins and not left:
+                note = None
+                pinned.append(f"#{m.pr}")
+            else:
+                note = _resolve_conflicts(path, m, merged, base, cfg, branch)
             if note is None:
                 try:
                     _git([*ident, "commit", "--no-edit", "-m", message], path)
@@ -648,10 +704,15 @@ def _checkout_combined(number: int, members: list[BundleMember], path: str,
                                       f"{', '.join(f'#{x.pr}' for x in merged) or base}"
                                       f" and {note} — left on {was} ({exc})",
                             path, was)
-            resolved.append(f"#{m.pr}")
+            if f"#{m.pr}" not in pinned:
+                resolved.append(f"#{m.pr}")
         merged.append(m)
     log.info("set up %s in %s: %s merged onto %s", branch, path, prs, base)
     detail = f"{was} → {branch} ({base} + {prs})"
+    if pinned:
+        detail += (f"; {', '.join(pinned)} only conflicted on a dependency pin to "
+                   f"another bundle repo; the local cargo patch builds that repo's "
+                   f"checkout, so either pin is fine")
     if resolved:
         detail += (f"; conflicts in {', '.join(resolved)} were resolved by Claude — "
                    f"review `git show {branch}` before trusting the result")
