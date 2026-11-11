@@ -157,3 +157,36 @@ def claude_json(prompt: str, cfg: Config, timeout: int | None = None) -> dict:
     raise LlmError(
         "could not parse JSON from claude output after retry: " + "; ".join(parse_errors)
     )
+
+
+def claude_agent_json(prompt: str, cfg: Config, cwd: str, allowed_tools: list[str],
+                      timeout: int | None = None) -> dict:
+    """:func:`claude_json`, but as an agent working IN *cwd* with *allowed_tools*
+    (edits accepted without asking — there is nobody to ask). For tasks that
+    change files, like resolving a merge conflict; the JSON object it ends with
+    is its report. Same errors as :func:`claude_json`, no retry: a second run
+    would start from whatever the first one left on disk.
+    """
+    exe = shutil.which("claude")
+    if exe is None:
+        raise LlmError("claude CLI not found on PATH (Crux requires headless Claude Code, D7)")
+    limit = cfg.llm_timeout if timeout is None else timeout
+    argv = [exe, "-p", "--output-format", "json", "--model", cfg.llm_model,
+            "--permission-mode", "acceptEdits", "--allowedTools", ",".join(allowed_tools)]
+    try:
+        proc = subprocess.run(argv, input=prompt, capture_output=True, cwd=cwd,
+                              encoding="utf-8", errors="replace", timeout=limit)
+    except FileNotFoundError as exc:
+        raise LlmError(f"failed to execute claude: {exc}") from exc
+    except subprocess.TimeoutExpired as exc:
+        raise LlmError(f"claude timed out after {limit}s") from exc
+    if proc.returncode != 0:
+        detail = "\n".join(part for part in ((proc.stderr or "").strip(),
+                                             (proc.stdout or "").strip()) if part)
+        if _looks_like_auth_error(detail) or not detail:
+            raise NotLoggedInError(NOT_LOGGED_IN_MSG)
+        raise LlmError(f"claude exited {proc.returncode}: {detail[:400]}")
+    try:
+        return _parse_result(proc.stdout)
+    except ValueError as exc:
+        raise LlmError(f"could not parse JSON from claude output: {exc}") from exc
