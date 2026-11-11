@@ -33,6 +33,7 @@ import os
 from dataclasses import dataclass
 
 import crux.bundle as bundle_store
+import crux.cargopatch as cargopatch
 import crux.post as post
 import crux.superpost as superpost
 import crux.superpr as superpr
@@ -533,9 +534,249 @@ def checkout(bundle: Bundle, cfg: Config,
     """
     paths, _defaults = superpr._clone_paths(cfg, bundle.members, repo_root)
     root = clone_root(cfg, repo_root)
-    return [_checkout_one(member,
-                          paths.get(f"{member.owner}/{member.repo}", ""), root)
-            for member in bundle.members]
+    by_repo: dict[str, list[BundleMember]] = {}
+    for member in bundle.members:
+        by_repo.setdefault(f"{member.owner}/{member.repo}".lower(), []).append(member)
+    results: list[Checkout] = []
+    done: set[str] = set()
+    for member in bundle.members:
+        key = f"{member.owner}/{member.repo}".lower()
+        if key in done:
+            continue
+        done.add(key)
+        group = by_repo[key]
+        path = paths.get(f"{member.owner}/{member.repo}", "")
+        if path:
+            # Last press's local cargo patch (and the Cargo.lock its build
+            # rewrote) would read as uncommitted work and block this one.
+            cargopatch.drop(path)
+        if len(group) == 1:
+            results.append(_checkout_one(member, path, root))
+        else:
+            results.extend(_checkout_combined(bundle.number, group, path, root, cfg,
+                                              bundle=set(by_repo)))
+    _patch_siblings(bundle.number, results)
+    return results
+
+
+def _patch_siblings(number: int, results: list[Checkout]) -> None:
+    """Point each ready Rust repo's git deps on other bundle repos at their
+    local checkouts, so the bundle builds as one tree instead of the pinned revs."""
+    ready = {r.slug.lower(): r.path for r in results if r.state == "ready" and r.path}
+    for r in results:
+        if r.state != "ready" or not r.path:
+            continue
+        try:
+            note = cargopatch.apply(r.path, ready, number)
+        except (OSError, RuntimeError) as exc:
+            note = f"could not write its local cargo patch ({exc})"
+        if note:
+            r.detail += f"; {note}"
+
+
+def combined_branch(number: int) -> str:
+    """The local branch a repo with several member PRs is set up on."""
+    return f"super/{number}"
+
+
+def _stack_order(members: list[BundleMember], base: str) -> list[BundleMember]:
+    """Members on `base` first, then each stacked PR after the one it sits on."""
+    by_head = {m.branch: m for m in members}
+
+    def depth(m: BundleMember) -> int:
+        n, seen = 0, set()
+        while m.base != base and m.base in by_head and m.branch not in seen:
+            seen.add(m.branch)
+            m, n = by_head[m.base], n + 1
+        return n
+
+    return sorted(members, key=depth)
+
+
+def _checkout_combined(number: int, members: list[BundleMember], path: str,
+                       root: str = "", cfg: Config | None = None,
+                       bundle: set[str] | None = None) -> list[Checkout]:
+    """Set up ONE repo that has several member PRs: a local `super/<n>` branch
+    off their shared base, with every member branch merged into it.
+
+    Checking each branch out in turn left the repo on whichever came last, so
+    the bundle was "set up" with all but one of that repo's PRs missing. The
+    PRs only make sense together on the branch they all target, so:
+
+    * every member must share one base branch — PRs aimed at different bases
+      do not describe one tree, and guessing which base wins would hand the
+      tester code nobody proposed. That is refused, naming each PR's base.
+      A stacked PR (based on another member's branch) is not a different
+      base: it sits on that member, so it is merged after it;
+    * the branch is Crux's own (`super/<n>`, reset on every press), built from
+      `origin/<base>` — no member branch is rewritten;
+    * a conflict that is only a git rev pin to another bundle repo (and
+      `Cargo.lock`) takes either side: the local cargo patch `checkout` writes
+      builds that repo's checkout, not the pin, so the pin no longer matters;
+    * any other conflict between two members is handed to Claude to resolve
+      (`_resolve_conflicts`); Crux checks no conflict is left and commits it,
+      and the result says which PRs were resolved that way. A conflict Claude
+      cannot resolve aborts the merge, puts the repo back on the branch it was
+      on, and names the PR that conflicted.
+
+    Returns one result for the repo, naming every member PR.
+    """
+    slug = f"{members[0].owner}/{members[0].repo}"
+    branch = combined_branch(number)
+    prs = ", ".join(f"#{m.pr}" for m in members)
+
+    def each(state: str, detail: str, path: str = path, was: str = "") -> list[Checkout]:
+        return [Checkout(slug=slug, branch=branch, path=path, was=was,
+                         state=state, detail=detail)]
+
+    heads = {m.branch for m in members}
+    bases = {m.base for m in members if m.base not in heads}
+    if len(bases) != 1:
+        named = ", ".join(f"#{m.pr} → {m.base}" for m in members)
+        return each("failed", f"its PRs target different base branches ({named}); "
+                              f"they cannot be set up as one tree — retarget them "
+                              f"to one base, then press again")
+    base = bases.pop()
+    members = _stack_order(members, base)
+    prs = ", ".join(f"#{m.pr}" for m in members)
+
+    if not path and root:
+        path, error = _clone_missing(slug, root)
+        if error:
+            return each("failed", error, path)
+    if not path:
+        return each("failed", "no clone of this repo on this machine, and no "
+                              "[super] roots directory to put one in", path)
+    try:
+        was = _git(["rev-parse", "--abbrev-ref", "HEAD"], path)
+        dirty = _git(["status", "--porcelain", "-uno"], path)
+    except CruxError as exc:
+        return each("failed", f"could not be read ({exc})", path)
+    if dirty:
+        return each("skipped", f"has uncommitted changes and is on {was} — commit "
+                               f"or stash them, then press again", path, was)
+    try:
+        _git(["fetch", "origin", base, *[m.branch for m in members]], path)
+    except CruxError as exc:
+        return each("failed", f"could not fetch {base} and {prs} ({exc})", path, was)
+    try:
+        _git(["checkout", "-B", branch, f"origin/{base}"], path)
+    except CruxError as exc:
+        return each("failed", f"could not create {branch} from {base} ({exc})",
+                    path, was)
+    ident = ["-c", "user.name=crux", "-c", "user.email=crux@localhost"]
+    resolved: list[str] = []
+    pinned: list[str] = []
+    merged: list[BundleMember] = []
+    for m in members:
+        message = f"super/{number}: merge #{m.pr} ({m.branch})"
+        try:
+            _git([*ident, "merge", "--no-ff", "--no-edit", "-m", message,
+                  f"origin/{m.branch}"], path)
+        except CruxError as exc:
+            # Conflicts are the expected case, not the exception: PRs in one
+            # repo for one feature touch the same files. Claude resolves them;
+            # Crux checks the result and commits it. Anything else, or a
+            # resolution that does not hold, rolls the repo back.
+            pins: list[str] = []
+            try:
+                pins = cargopatch.take_pin_side(path, bundle or set())
+                left = _git(["diff", "--name-only", "--diff-filter=U"], path).strip()
+            except (CruxError, RuntimeError, OSError):
+                left = "?"
+            if pins and not left:
+                note = None
+                pinned.append(f"#{m.pr}")
+            else:
+                note = _resolve_conflicts(path, m, merged, base, cfg, branch)
+            if note is None:
+                try:
+                    _git([*ident, "commit", "--no-edit", "-m", message], path)
+                except CruxError as commit_exc:
+                    note = f"its resolution could not be committed ({commit_exc})"
+            if note is not None:
+                for undo in (["merge", "--abort"], ["checkout", was]):
+                    try:
+                        _git(undo, path)
+                    except CruxError:
+                        pass
+                return each("failed", f"#{m.pr} ({m.branch}) conflicts with "
+                                      f"{', '.join(f'#{x.pr}' for x in merged) or base}"
+                                      f" and {note} — left on {was} ({exc})",
+                            path, was)
+            if f"#{m.pr}" not in pinned:
+                resolved.append(f"#{m.pr}")
+        merged.append(m)
+    log.info("set up %s in %s: %s merged onto %s", branch, path, prs, base)
+    detail = f"{was} → {branch} ({base} + {prs})"
+    if pinned:
+        detail += (f"; {', '.join(pinned)} only conflicted on a dependency pin to "
+                   f"another bundle repo; the local cargo patch builds that repo's "
+                   f"checkout, so either pin is fine")
+    if resolved:
+        detail += (f"; conflicts in {', '.join(resolved)} were resolved by Claude — "
+                   f"review `git show {branch}` before trusting the result")
+    return each("ready", detail, path, was)
+
+
+CONFLICT_PROMPT = """You are resolving a git merge conflict in the repository in \
+your working directory, so a tester can try several pull requests together.
+
+Branch `{branch}` was created from `origin/{base}`; {merged} already merged into it. \
+Merging `origin/{incoming}` (PR #{pr}) now conflicts in these files:
+{files}
+
+Resolve every conflict so the result keeps what BOTH sides intended — each \
+side is a PR someone wants to ship. Read both versions and the surrounding code; \
+never drop one side's change just to make the markers go away. Edit only the \
+conflicted files, remove every conflict marker, then `git add` each file. Do not \
+commit, do not run any other git command that changes history.
+
+When done, reply with ONLY a JSON object:
+{{"resolved": true|false, "summary": "<one line per file: what you kept>"}}
+Set "resolved" to false if you could not keep both sides' intent."""
+
+
+def _resolve_conflicts(path: str, member: BundleMember, merged: list[BundleMember],
+                       base: str, cfg: Config | None, branch: str = "") -> str | None:
+    """Have Claude resolve the in-progress merge in *path*. None when the merge
+    is ready to commit; otherwise why not (the caller rolls back)."""
+    import crux.llm as llm
+    try:
+        files = [f for f in _git(["diff", "--name-only", "--diff-filter=U"], path)
+                 .splitlines() if f.strip()]
+    except CruxError as exc:
+        return f"its conflicts could not be listed ({exc})"
+    if not files:
+        return "the merge failed without a conflict to resolve"
+    if cfg is None:
+        return "no Crux config to run Claude with"
+    prompt = CONFLICT_PROMPT.format(
+        branch=branch or "the super branch", base=base, incoming=member.branch, pr=member.pr,
+        merged=", ".join(f"#{m.pr} ({m.branch})" for m in merged) or "nothing else has",
+        files="\n".join(f"- {f}" for f in files))
+    try:
+        report = llm.claude_agent_json(
+            prompt, cfg, cwd=path, timeout=max(cfg.llm_timeout, 900),
+            allowed_tools=["Read", "Edit", "Grep", "Glob", "Bash(git add:*)",
+                           "Bash(git diff:*)", "Bash(git show:*)", "Bash(git log:*)"])
+    except Exception as exc:  # noqa: BLE001 — any failure is "not resolved"
+        return f"Claude could not resolve it ({exc})"
+    if not report.get("resolved"):
+        return f"Claude could not keep both sides ({str(report.get('summary', ''))[:200]})"
+    try:
+        left = _git(["diff", "--name-only", "--diff-filter=U"], path)
+    except CruxError as exc:
+        return f"its resolution could not be checked ({exc})"
+    try:
+        markers = _git(["grep", "-lE", "^(<<<<<<<|>>>>>>>)( |$)", "--", *files], path)
+    except CruxError:
+        markers = ""   # `git grep` exits 1 when nothing matches: the good case
+    if left.strip() or markers.strip():
+        return "Claude's resolution left conflicts behind"
+    log.info("Claude resolved %d conflicted file(s) merging #%d: %s",
+             len(files), member.pr, str(report.get("summary", ""))[:300])
+    return None
 
 
 # ---------------------------------------------------------------------------

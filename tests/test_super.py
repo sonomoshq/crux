@@ -3414,3 +3414,137 @@ class TestGitTooOldForSuperDiffs(unittest.TestCase):
     def test_setup_is_quiet_about_a_current_or_unreadable_git(self) -> None:
         self.assertEqual(self._setup_says("git version 2.43.0\n"), "")
         self.assertEqual(self._setup_says("garbage"), "")
+
+
+class TestCombinedCheckout(unittest.TestCase):
+    """Several member PRs in ONE repo: `set up to test` used to check each
+    branch out in turn, leaving the repo on the last one. Now they are merged
+    onto their shared base on a local `super/<n>` branch, with conflicts
+    handed to Claude. Real repos throughout — the behaviour is git's."""
+
+    def _world(self, tmp: str, feat_a: str = "a\n", feat_b: str = "b\n",
+               same_file: bool = False) -> tuple[str, list[BundleMember]]:
+        origin = Path(tmp) / "origin.git"
+        work = Path(tmp) / "seed"
+        make_repo(work)
+        git(["init", "-q", "--bare", "-b", "main", str(origin)], tmp)
+        git(["remote", "add", "origin", str(origin)], str(work))
+        git(["push", "-q", "origin", "main"], str(work))
+        for name, text in (("feat-a", feat_a), ("feat-b", feat_b)):
+            git(["checkout", "-q", "-b", name, "main"], str(work))
+            target = "f.txt" if same_file else f"{name}.txt"
+            (work / target).write_text(text)
+            git(["add", "-A"], str(work))
+            git(["commit", "-qm", name], str(work))
+            git(["push", "-q", "origin", name], str(work))
+        clone = Path(tmp) / "A"
+        git(["clone", "-q", str(origin), str(clone)], tmp)
+        git(["config", "user.email", "t@t"], str(clone))
+        git(["config", "user.name", "T"], str(clone))
+        members = [BundleMember(owner="o", repo="A", branch="feat-a", pr=1),
+                   BundleMember(owner="o", repo="A", branch="feat-b", pr=2)]
+        return str(clone), members
+
+    def _run(self, path, members, resolver=None):
+        import crux.superact as superact
+        with mock.patch.object(superact, "_git", side_effect=git_or_error):
+            if resolver is None:
+                return superact._checkout_combined(7, members, path, cfg=Config())
+            with mock.patch("crux.llm.claude_agent_json", side_effect=resolver):
+                return superact._checkout_combined(7, members, path, cfg=Config())
+
+    def test_two_prs_land_together_on_a_super_branch_off_their_base(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, members = self._world(tmp)
+            got = self._run(path, members)
+            self.assertEqual([g.state for g in got], ["ready"], got[0].detail)
+            self.assertIn("#1, #2", got[0].detail)
+            self.assertEqual(git(["rev-parse", "--abbrev-ref", "HEAD"], path), "super/7")
+            self.assertTrue((Path(path) / "feat-a.txt").exists())
+            self.assertTrue((Path(path) / "feat-b.txt").exists())
+            self.assertNotIn("Claude", got[0].detail)
+
+    def test_a_conflict_is_resolved_by_claude_and_committed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, members = self._world(tmp, "from a\n", "from b\n", same_file=True)
+
+            def resolver(prompt, cfg, cwd, allowed_tools, timeout=None):
+                self.assertIn("PR #2", prompt)
+                self.assertIn("f.txt", prompt)
+                (Path(cwd) / "f.txt").write_text("from a\nfrom b\n")
+                git(["add", "f.txt"], cwd)
+                return {"resolved": True, "summary": "f.txt: kept both lines"}
+
+            got = self._run(path, members, resolver)
+            self.assertEqual(got[0].state, "ready", got[0].detail)
+            self.assertIn("resolved by Claude", got[0].detail)
+            self.assertEqual((Path(path) / "f.txt").read_text(), "from a\nfrom b\n")
+            self.assertEqual(git(["status", "--porcelain", "-uno"], path), "")
+
+    def test_a_conflict_claude_gives_up_on_rolls_back(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, members = self._world(tmp, "from a\n", "from b\n", same_file=True)
+            got = self._run(path, members, lambda *a, **k: {"resolved": False, "summary": "no"})
+            self.assertEqual(got[0].state, "failed")
+            self.assertIn("#2 (feat-b) conflicts with #1", got[0].detail)
+            self.assertEqual(git(["rev-parse", "--abbrev-ref", "HEAD"], path), "main")
+            self.assertEqual(git(["status", "--porcelain", "-uno"], path), "")
+
+    def test_a_resolution_that_leaves_markers_is_refused(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, members = self._world(tmp, "from a\n", "from b\n", same_file=True)
+
+            def sloppy(prompt, cfg, cwd, allowed_tools, timeout=None):
+                git(["add", "f.txt"], cwd)   # staged with the markers still in
+                return {"resolved": True, "summary": "done"}
+
+            got = self._run(path, members, sloppy)
+            self.assertEqual(got[0].state, "failed")
+            self.assertIn("left conflicts behind", got[0].detail)
+            self.assertEqual(git(["rev-parse", "--abbrev-ref", "HEAD"], path), "main")
+
+    def test_prs_on_different_bases_are_refused(self) -> None:
+        import crux.superact as superact
+        members = [BundleMember(owner="o", repo="A", branch="x", pr=1, base="main"),
+                   BundleMember(owner="o", repo="A", branch="y", pr=2, base="release")]
+        with mock.patch.object(superact, "_git", side_effect=AssertionError("no git")):
+            got = superact._checkout_combined(7, members, "/clones/A", cfg=Config())
+        self.assertEqual([g.state for g in got], ["failed"])
+        self.assertIn("#1 → main, #2 → release", got[0].detail)
+
+    def test_a_stacked_pr_is_merged_after_the_pr_it_sits_on(self) -> None:
+        # #2 targets #1's branch, not main: that is a stack, not a second base.
+        with tempfile.TemporaryDirectory() as tmp:
+            path, (a, b) = self._world(tmp)
+            b.base = "feat-a"
+            got = self._run(path, [b, a])
+            self.assertEqual([g.state for g in got], ["ready"], got[0].detail)
+            self.assertIn("main + #1, #2", got[0].detail)
+            self.assertTrue((Path(path) / "feat-a.txt").exists())
+            self.assertTrue((Path(path) / "feat-b.txt").exists())
+
+    def test_uncommitted_work_is_never_touched(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path, members = self._world(tmp)
+            (Path(path) / "f.txt").write_text("edited\n")
+            got = self._run(path, members)
+            self.assertEqual(got[0].state, "skipped")
+            self.assertEqual((Path(path) / "f.txt").read_text(), "edited\n")
+
+    def test_the_bundle_checkout_combines_only_repos_with_several_prs(self) -> None:
+        import crux.superact as superact
+        bundle = Bundle(number=7, members=[
+            BundleMember(owner="o", repo="A", branch="feat-a", pr=1),
+            BundleMember(owner="o", repo="B", branch="feat", pr=3),
+            BundleMember(owner="o", repo="A", branch="feat-b", pr=2)])
+        with mock.patch.object(superact.superpr, "_clone_paths",
+                               return_value=({"o/A": "/a", "o/B": "/b"}, {})), \
+             mock.patch.object(superact, "_checkout_one",
+                               return_value=superact.Checkout(slug="o/B", branch="feat",
+                                                              state="ready")) as one, \
+             mock.patch.object(superact, "_checkout_combined",
+                               return_value=[superact.Checkout(slug="o/A", branch="super/7", state="ready")]) as combined:
+            got = superact.checkout(bundle, Config())
+        self.assertEqual(one.call_count, 1)
+        self.assertEqual([m.pr for m in combined.call_args.args[1]], [1, 2])
+        self.assertEqual(len(got), 2)   # one row per repo, not per PR
