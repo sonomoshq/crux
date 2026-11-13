@@ -355,6 +355,34 @@ def _announce_slack(cfg, info: RepoInfo, pr: int, previous, log) -> tuple[str, s
         return "", ""
 
 
+def _announce_despite_failure(cfg, info: RepoInfo | None, pr: int | None,
+                              log) -> None:
+    """D16 is independent of the card: a run that failed or crashed still
+    posts the PR to Slack when Slack is configured. announce_pr finds an
+    existing message for the PR link first and threads under it, so this
+    never double-posts. Best-effort and never raises."""
+    if cfg is None or info is None:
+        return
+    try:
+        import crux.slack as slack
+        if not slack.enabled(cfg):
+            return
+        import crux.post as post
+        if pr is None:
+            pr = post.find_pr(info)
+        if pr is None:
+            return
+        import crux.cache as cache
+        try:
+            previous = cache.load(info, pr)
+        except Exception:
+            previous = None
+        _announce_slack(cfg, info, pr, previous, log)
+    except Exception as exc:
+        log.warning("slack announce after a failed run failed for PR #%s: %s",
+                    pr, exc)
+
+
 def _align_with_pr_base(info: RepoInfo, pr: int, post, gitio, log) -> RepoInfo:
     """Re-base *info* on the branch PR *pr* actually merges into (D34).
 
@@ -390,6 +418,7 @@ def _align_with_pr_base(info: RepoInfo, pr: int, post, gitio, log) -> RepoInfo:
 def _cmd_run(args: argparse.Namespace) -> int:
     log = logging.getLogger(LOG_NAME)
     info: RepoInfo | None = None
+    cfg = None
     pr: int | None = args.pr
     scoped = False  # True once the D13 allowlist check has passed
     held = contextlib.ExitStack()  # the single-flight lock of a delayed run
@@ -677,6 +706,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
             # No PR to post a card onto (failure before one existed): the
             # detached run would otherwise die with nothing on the terminal.
             _tty_failure("the review run failed")
+        if scoped and not args.dry_run:
+            _announce_despite_failure(cfg, info, pr, log)
         return 0
     except Exception as exc:
         log.exception("crux run crashed")
@@ -686,6 +717,8 @@ def _cmd_run(args: argparse.Namespace) -> int:
                              log, discover=scoped and not args.dry_run,
                              dry_run=args.dry_run):
             _tty_failure("the review run crashed")
+        if scoped and not args.dry_run:
+            _announce_despite_failure(cfg, info, pr, log)
         return 0
     finally:
         held.close()

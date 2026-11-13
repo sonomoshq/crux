@@ -579,6 +579,43 @@ class TestErrors(CliTestBase):
         self.assertIn("failed", notice)
         self.assertIn("crux.log", notice)
 
+    def test_failed_run_still_announces_the_pr_to_slack(self) -> None:
+        # D16 does not depend on the card: a review that fails still posts
+        # the PR to the channel when Slack is configured.
+        self.mods["crux.gitio"].diff_hunks.side_effect = CruxError("boom")
+        with mock.patch("crux.slack.enabled", return_value=True), \
+             mock.patch("crux.slack.announce_pr",
+                        return_value=("C1", "12.34")) as announce:
+            code, _, _ = self.run_cli(["run", "--pr", "9"])
+        self.assertEqual(code, 0)
+        announce.assert_called_once()
+        self.assertEqual(announce.call_args.args[2], 9)
+
+    def test_crashed_run_still_announces_the_pr(self) -> None:
+        # An unexpected crash after the PR was found still reaches Slack.
+        self.mods["crux.post"].find_pr.return_value = 11
+        self.mods["crux.post"].sync_pr_metadata.side_effect = RuntimeError("weird")
+        with mock.patch("crux.slack.enabled", return_value=True), \
+             mock.patch("crux.slack.announce_pr",
+                        return_value=("C1", "12.34")) as announce:
+            code, _, _ = self.run_cli(["run", "--yes"])
+        self.assertEqual(code, 0)
+        announce.assert_called_once()
+        self.assertEqual(announce.call_args.args[2], 11)
+
+    def test_failed_preview_never_announces(self) -> None:
+        self.mods["crux.gitio"].diff_hunks.side_effect = CruxError("boom")
+        with mock.patch("crux.slack.enabled", return_value=True), \
+             mock.patch("crux.slack.announce_pr") as announce:
+            self.run_cli(["run", "--pr", "9", "--dry-run"])
+        announce.assert_not_called()
+
+    def test_failed_run_with_slack_off_never_looks_up_the_pr(self) -> None:
+        self.mods["crux.gitio"].diff_hunks.side_effect = CruxError("boom")
+        with mock.patch("crux.slack.announce_pr") as announce:
+            self.run_cli(["run", "--pr", "9"])
+        announce.assert_not_called()
+
     def test_unexpected_exception_exits_zero(self) -> None:
         # A crash before repo_info even resolves (info is None) still surfaces
         # a terminal notice — this is the class of silent failure that hid the
